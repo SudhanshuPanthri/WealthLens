@@ -1,12 +1,17 @@
 generator client {
   provider = "prisma-client-js"
+  // "native" for local dev; the rhel target is what Vercel's serverless runtime
+  // needs (without it, deploys fail with "could not locate the Query Engine").
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
-// SQLite for local dev. To move to Postgres in production, change provider
-// to "postgresql" and set DATABASE_URL accordingly — the schema is portable.
+// Postgres (Neon) for both local dev and production. On Neon/Vercel use the
+// POOLED connection string for `url` (serverless runtime) and the DIRECT one for
+// `directUrl` (migrations) — see DEPLOY.md.
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
