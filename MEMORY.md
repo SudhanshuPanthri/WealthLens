@@ -72,18 +72,49 @@ Everything below is implemented, `tsc --noEmit` clean, and smoke-tested live.
   round-trip lossily); Edge-runtime boot (split `instrumentation-node.ts` out so
   `node:dns` isn't in the Edge bundle).
 
+### Phase 11 — cross-broker analytics (most recent work)
+- **Cross-broker analytics** (`/analytics`, `lib/analytics.ts`, `/api/analytics`)
+  — roadmap #1. Three pillars, all verified live:
+  - **True cross-broker exposure** — `computeCrossBroker()` collapses broker-tagged
+    `Holding` rows into one *real* position per stock (the dashboard keeps them as
+    separate rows, which **understates** true concentration). Surfaces the
+    merged-across-brokers position table, a "held across brokers" overlap callout
+    ("your real IDEA exposure is X% across Zerodha + Other"), and **true** top-1/3/5
+    + HHI computed on the merged positions.
+  - **Market-cap allocation** — large/mid/small/unclassified donut from live
+    `marketCap`. Absolute INR bands in `CAP_TIERS` (large ≥ ₹50,000 Cr, mid ≥
+    ₹15,000 Cr) — a rough SEBI approximation; one place to retune. (Quirk: penny
+    stocks with huge share counts, e.g. Vodafone Idea, can land in "Large cap" by
+    absolute market cap — expected, not a bug.)
+  - **XIRR vs Nifty 50 benchmark** — `benchmarkVsNifty()` replays the user's exact
+    buy/sell cashflows (same ₹, same dates) into the Nifty index (`^NSEI` daily
+    closes, last-close-on-or-before each trade), then compares **money-weighted
+    XIRR** + alpha. Reuses `computeXirr` + `computePnl` from `pnl.ts` for the actual
+    side so the figure matches the transactions page. Caveat: heavy intra-period
+    trading can make the simulated terminal `niftyValue` diverge (sells valued at
+    index, not stock, price) — XIRR is the honest headline; the UI disclaimer says so.
+- Verified live (Zerodha holdings + a generic 2nd-broker CSV overlapping IDEA +
+  a tradebook): merge correct (4 rows → 3 positions, 2 brokers), cap split 94.8/5.2,
+  HHI 6277, benchmark XIRR 18.8% vs Nifty 2.6% (+16.2pp). `tsc` clean, page 200,
+  auth gate 307. **MF overlap deferred** (see roadmap) — no fund holdings imported
+  and no free fund-constituent data source.
+
 ---
 
 ## 3. Discussed but NOT yet built (the roadmap)
 
-Ranked product differentiators (the user picked **Tax intelligence** first — done).
-Build order proposed:
+Ranked product differentiators. Done: **Tax intelligence** (Phase 10),
+**Cross-broker analytics** (Phase 11). Remaining build order:
 
-1. **Cross-broker analytics** — unified allocation across all brokers + funds,
-   **mutual-fund overlap/concentration** ("your real RELIANCE exposure across
-   direct + 3 funds is 11%"), **XIRR vs Nifty** benchmarking.
+1. **Mutual-fund look-through overlap** — the one piece of cross-broker analytics
+   deferred: "your real RELIANCE exposure across direct + 3 funds is 11%." Blocked
+   on two things — (a) funds aren't imported as holdings (parsers are stock-only),
+   and (b) there's **no free fund-constituent data source** (mfapi.in gives NAV
+   only). Needs a fund-import path + a constituent dataset (AMC monthly disclosures,
+   or deterministic index-fund baskets as a first cut).
 2. **CAS / MF Central import** — one-upload onboarding: NSDL/CDSL **CAS** (all
-   demat holdings, any broker, one file) + CAMS/KFintech (all mutual funds).
+   demat holdings, any broker, one file) + CAMS/KFintech (all mutual funds). Would
+   also unblock #1 by getting fund holdings into the system.
 3. **Net worth + alerts** — manual FD/EPF/gold/real-estate → true net worth;
    price/drawdown/dividend alerts for daily-habit retention.
 4. **Deepen tax** — loss carry-forward & set-off rules, debt/gold instrument
@@ -97,17 +128,17 @@ dividends/corporate actions in P&L, per-stock news, live broker sync (Kite Conne
 ## 4. Where things live (quick map)
 
 ```
-src/lib/         tax.ts  pnl.ts  metrics.ts  quotes.ts  market.ts
+src/lib/         analytics.ts  tax.ts  pnl.ts  metrics.ts  quotes.ts  market.ts
                  parsers/ (holdings + transactions incl. parseZerodhaPnl)
                  insights/ (rules|gemini|openrouter|claude + dispatcher)
                  cache.ts  rate-limit.ts  log.ts  format.ts  auth.ts  oauth.ts
-src/app/api/     tax  transactions(+parse/commit)  stock/[symbol]  index/[slug]
-                 watchlist  search/stocks  market  portfolio  insights
-                 cron/refresh  auth/(login|signup|logout|oauth)
-src/app/(app)/   dashboard  stock/[symbol]  index/[slug]  watchlist
+src/app/api/     analytics  tax  transactions(+parse/commit)  stock/[symbol]
+                 index/[slug]  watchlist  search/stocks  market  portfolio
+                 insights  cron/refresh  auth/(login|signup|logout|oauth)
+src/app/(app)/   dashboard  analytics  stock/[symbol]  index/[slug]  watchlist
                  transactions  tax  import  insights
-src/components/  TaxView  IndexDetailView  StockDetailView  TransactionsView
-                 IndicesStrip  DashboardView  Nav  ThemeToggle  PriceChart ...
+src/components/  AnalyticsView  TaxView  IndexDetailView  StockDetailView
+                 TransactionsView  IndicesStrip  DashboardView  Nav  ThemeToggle ...
 src/instrumentation.ts + instrumentation-node.ts   (boot: DNS + refresh timer)
 proxy.ts         auth gate (Next 16's renamed middleware)
 prisma/schema.prisma   User Portfolio Holding Transaction WatchlistItem

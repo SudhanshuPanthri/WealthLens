@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, LogOut } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers, LogOut } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
 
 const LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/analytics", label: "Analytics", icon: Layers },
   { href: "/watchlist", label: "Watchlist", icon: Star },
   { href: "/transactions", label: "Transactions", icon: Receipt },
   { href: "/tax", label: "Tax", icon: Landmark },

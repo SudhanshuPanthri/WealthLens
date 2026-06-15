@@ -89,6 +89,7 @@ Broker export (CSV/XLSX)
 | `market.ts` | Public homepage data: NSE/BSE indices, top movers per cap bucket, and mutual-fund NAV/returns (via free `mfapi.in`), through the shared `cache.ts` TTL store. `INDEX_REGISTRY` (slug↔symbol whitelist) + `getIndexDetail()` power the clickable index detail pages. |
 | `metrics.ts` | `computeMetrics()` — enriches holdings with live data and derives totals, P&L, day change, sector/broker allocation, and concentration (top-1/3/5, Herfindahl index). Pure function over `Holding[]`. |
 | `pnl.ts` | `computePnl()` — FIFO realized P&L, open positions valued live, an invested-over-time series, and `computeXirr()` (Newton-Raphson + bisection). Pure over `Transaction[]` (+ live quotes). |
+| `analytics.ts` | **Cross-broker analytics.** `computeCrossBroker()` merges broker-tagged `Holding` rows into true per-stock positions → market-cap allocation (`CAP_TIERS`), real single-stock concentration, and the stocks split across brokers. `benchmarkVsNifty()` replays the user's exact buy/sell cashflows into the Nifty 50 (`^NSEI`) and compares money-weighted XIRR + alpha (reuses `computePnl`/`computeXirr`). |
 | `tax.ts` | `computeTax()` — capital-gains intelligence over `Transaction[]`. FIFO-dates each disposal to classify **STCG vs LTCG** (Indian FY, 12-month rule), computes realized gains/tax per FY, tracks the **₹1.25L LTCG free allowance**, and surfaces three planning levers: **tax-loss harvesting**, **tax-free-LTCG to book**, and a **holding-period countdown** (STCG winners nearing the LTCG line). Rates/thresholds live in `TAX_RULES` (post-Jul-2024 regime; one place to update). |
 | `refresh.ts` | `refreshAllQuotes()` warms the QuoteCache + market snapshot for every held/watchlisted symbol; `isMarketLikelyOpen()` gates off-hours. Driven by the boot timer and `/api/cron/refresh`. |
 | `cache.ts` | `TTLCache` — single-instance TTL cache with serve-stale-on-failure; the swap point for a Redis-backed store. |
@@ -150,11 +151,12 @@ else ───────────────────► rule-based  (n
 | `/api/transactions` | GET | P&L summary + ledger; polled by the transactions page. |
 | `/api/transactions/parse` `/commit` | POST | Tradebook **or P&L statement** upload → preview → idempotent commit (dedup key quantizes qty/price to absorb float round-trip). |
 | `/api/tax` | GET | Capital-gains tax summary for a financial year (`?fy=`); polled by the tax page. |
+| `/api/analytics` | GET | Cross-broker merged positions + market-cap allocation (holdings) and the Nifty 50 benchmark (transactions); polled by the analytics page for live prices. |
 | `/api/cron/refresh` | GET | Secret-protected quote refresh for serverless schedulers. |
 
 `proxy.ts` (Next 16's renamed middleware) is a fast cookie-presence gate that
 redirects unauthenticated users away from the protected pages
-(`/dashboard|/import|/insights|/watchlist|/stock|/index|/transactions|/tax`) and
+(`/dashboard|/analytics|/import|/insights|/watchlist|/stock|/index|/transactions|/tax`) and
 authenticated users away from `/login|/signup`. Real session validation (DB
 lookup) happens in `getSessionUser()` in the app layout and every API route.
 
@@ -178,6 +180,9 @@ lookup) happens in `getSessionUser()` in the app layout and every API route.
 - `(app)/transactions` — `TransactionsView`: P&L stat cards (open invested,
   current value, unrealized, realized, XIRR), capital-over-time chart, positions
   and ledger tables, and the tradebook / P&L-statement import.
+- `(app)/analytics` — `AnalyticsView`: the Nifty 50 benchmark hero (your XIRR vs
+  Nifty + alpha), true cross-broker concentration, a "held across brokers" overlap
+  card, market-cap + sector donuts, and the merged-positions table. Polls live.
 - `(app)/tax` — `TaxView`: FY selector, realized STCG/LTCG + estimated-tax cards,
   the ₹1.25L LTCG-allowance meter, three harvesting panels (loss harvesting,
   tax-free-LTCG to book, almost-long-term countdown), and the realized-disposals table.
@@ -337,6 +342,40 @@ qty/price to 4 dp.
 imported only under the Node runtime — the Edge bundle was failing to compile on
 the `node:dns` import.
 
+### Phase 11 — cross-broker analytics
+
+The second differentiation round (roadmap #1): the insights a single broker's app
+*cannot* show because it only ever sees its own slice.
+
+**11a — True cross-broker exposure.** `computeCrossBroker()` (in `analytics.ts`)
+collapses the broker-tagged `Holding` rows — which the dashboard deliberately keeps
+separate — into one real position per stock. This corrects a genuine blind spot:
+holding RELIANCE at two brokers shows up as two sub-10% rows on the dashboard but is
+one larger position in reality, so the dashboard *understates* concentration. The
+analytics page recomputes top-1/3/5 + HHI on the merged set and calls out every
+stock split across brokers with its combined weight.
+
+**11b — Market-cap allocation.** A large/mid/small/unclassified donut from live
+`marketCap`, using absolute INR bands in `CAP_TIERS` (a rough SEBI approximation;
+the one place to retune). The dashboard had sector + broker allocation but no
+cap-tier view.
+
+**11c — XIRR vs Nifty 50 benchmark.** `benchmarkVsNifty()` answers "would I have
+done better just buying the Nifty?" It replays the user's exact buy/sell cashflows
+(same rupees, same dates) into the index — buying/selling Nifty units at each trade
+date's close (`^NSEI` daily history, last-close-on-or-before) — then compares the
+money-weighted XIRR and reports the alpha. The actual-side XIRR reuses `computePnl`
+so it matches the transactions page exactly. Known limitation: heavy intra-period
+trading can make the simulated terminal value diverge (sells are valued at the index
+price, not the stock's), so XIRR is the headline and the UI disclaims the rest.
+
+**11d — Verification.** `tsc` clean. Smoke-tested live end-to-end: Zerodha holdings
++ a generic second-broker CSV overlapping IDEA + a Zerodha tradebook → merge correct
+(4 rows → 3 positions across 2 brokers, IDEA flagged), cap split 94.8/5.2%, HHI 6277,
+benchmark XIRR 18.8% vs Nifty 2.6% (+16.2pp). Page returns 200; the proxy gate
+redirects (307) unauthenticated. **MF look-through overlap was deferred** — funds
+aren't imported as holdings and there's no free fund-constituent data source.
+
 ---
 
 ## 8. Running it
@@ -374,12 +413,14 @@ OAuth pair to enable "Continue with Google" (redirect URI:
   Kite Connect connector could populate the same `Holding`/`Transaction` rows
   without changing metrics/insights.
 - **More OAuth providers:** add a registry entry in `oauth.ts` (GitHub, Apple…).
-- **Next up (product differentiators, ranked):**
-  1. **Cross-broker analytics** — unified sector/market-cap allocation across all
-     brokers + funds, **mutual-fund overlap/concentration**, and XIRR-vs-Nifty
-     benchmarking. Insights impossible on any single broker site.
+- **Next up (product differentiators, ranked):** Done so far — tax intelligence
+  (Phase 10) and cross-broker analytics (Phase 11).
+  1. **Mutual-fund look-through overlap** — the deferred slice of cross-broker
+     analytics ("your real RELIANCE exposure across direct + 3 funds is 11%").
+     Blocked on importing funds as holdings *and* on a fund-constituent data source
+     (mfapi.in is NAV-only); index-fund baskets are a deterministic first cut.
   2. **CAS / MF Central import** — one-upload onboarding: NSDL/CDSL CAS for all
-     demat holdings + CAMS/KFintech for all mutual funds.
+     demat holdings + CAMS/KFintech for all mutual funds (also unblocks #1).
   3. **Net worth + alerts** — manual FD/EPF/gold/real-estate entries for true net
      worth; price/drawdown/dividend alerts for daily-habit retention.
   4. Deepen tax: short/long-term **loss carry-forward & set-off** rules, debt/gold

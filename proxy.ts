@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const SESSION_COOKIE = "wl_session";
-const PROTECTED = ["/dashboard", "/import", "/insights", "/watchlist", "/stock", "/index", "/transactions", "/tax"];
+const PROTECTED = ["/dashboard", "/analytics", "/import", "/insights", "/watchlist", "/stock", "/index", "/transactions", "/tax"];
 const AUTH_PAGES = ["/login", "/signup"];
 
 /**
@@ -26,6 +26,7 @@ export function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     "/dashboard/:path*",
+    "/analytics/:path*",
     "/import/:path*",
     "/insights/:path*",
     "/watchlist/:path*",
