@@ -26,6 +26,7 @@ export type Term = "STCG" | "LTCG";
 export interface Disposal {
   symbol: string;
   exchange: string;
+  isin: string | null;
   quantity: number;
   buyDate: string; // ISO
   sellDate: string; // ISO
@@ -33,6 +34,29 @@ export interface Disposal {
   sellValue: number;
   gain: number;
   term: Term;
+}
+
+/** Losses applied to reduce a financial year's taxable gains. */
+export interface LossSetOff {
+  currentStclVsLtcg: number; // this year's net short-term loss set against this year's LTCG
+  broughtFwdStclUsed: number; // carried short-term loss set against this year's STCG then LTCG
+  broughtFwdLtclUsed: number; // carried long-term loss set against this year's LTCG
+  totalSetOff: number;
+}
+
+/** Unabsorbed loss from one FY, still available to carry forward (8 AY limit). */
+export interface CarryForwardBucket {
+  fy: string; // origin FY the loss was booked in
+  stcl: number; // remaining short-term capital loss
+  ltcl: number; // remaining long-term capital loss
+  expiresFy: string; // last FY it can still be set off (origin + 8)
+}
+
+export interface CarryForward {
+  stcl: number; // total STCL carried INTO the FY after the selected one
+  ltcl: number; // total LTCL carried forward
+  buckets: CarryForwardBucket[]; // by origin FY, oldest first
+  expiringFy: string | null; // earliest expiry among the buckets
 }
 
 export interface TaxLot {
@@ -62,13 +86,17 @@ export interface TaxSummary {
   fy: string; // e.g. "2025-26"
   availableFys: string[];
   realized: {
-    stcgGain: number;
-    ltcgGain: number;
-    stcgTax: number;
-    ltcgTax: number;
+    stcgGain: number; // gross net short-term gain for the FY (can be < 0)
+    ltcgGain: number; // gross net long-term gain for the FY (can be < 0)
+    netStcg: number; // taxable short-term after loss set-off (≥ 0)
+    netLtcg: number; // taxable long-term after loss set-off (≥ 0, before exemption)
+    setOff: LossSetOff;
+    stcgTax: number; // on netStcg
+    ltcgTax: number; // on netLtcg above the exemption
     totalTax: number;
     disposals: Disposal[];
   };
+  carryForward: CarryForward; // losses carried into the FY after the selected one
   ltcgAllowance: { exemption: number; used: number; remaining: number };
   unrealized: {
     stcgGain: number;
@@ -100,6 +128,101 @@ function fyStartYear(fy: string): number {
   return Number(fy.slice(0, 4));
 }
 
+/** FY label from a start year, e.g. 2025 → "2025-26". */
+function fyLabel(startYear: number): string {
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+}
+
+// Capital losses may be carried forward for 8 assessment years after the year
+// they're booked (a loss in FY Y can be set off through FY Y+8).
+const CARRY_FORWARD_YEARS = 8;
+
+interface FyGains {
+  stcgGross: number; // net short-term gain for the FY (within-head set-off already applied)
+  ltcgGross: number; // net long-term gain for the FY
+}
+
+/**
+ * Apply Indian capital-loss set-off rules chronologically through `targetFy`:
+ *  - within a head, gains and losses are already netted (caller passes net),
+ *  - a current-year short-term loss sets off the current year's long-term gain,
+ *  - brought-forward STCL sets off STCG first (higher rate) then LTCG,
+ *  - brought-forward / current LTCL sets off only LTCG,
+ *  - unabsorbed losses carry forward up to 8 AYs (oldest used first, then expire).
+ * Returns the target FY's set-off + taxable gains and the carry-forward ledger
+ * standing after that FY.
+ */
+function runSetOff(
+  perFy: Map<string, FyGains>,
+  targetFy: string,
+): { setOff: LossSetOff; netStcg: number; netLtcg: number; carryForward: CarryForward } {
+  const targetSy = fyStartYear(targetFy);
+  const years = new Set<number>([...perFy.keys()].map(fyStartYear));
+  years.add(targetSy);
+  const ordered = [...years].filter((sy) => sy <= targetSy).sort((a, b) => a - b);
+
+  let buckets: { sy: number; stcl: number; ltcl: number }[] = [];
+  let result = { setOff: emptySetOff(), netStcg: 0, netLtcg: 0 };
+
+  for (const sy of ordered) {
+    buckets = buckets.filter((b) => sy <= b.sy + CARRY_FORWARD_YEARS); // expire stale losses
+    const g = perFy.get(fyLabel(sy)) ?? { stcgGross: 0, ltcgGross: 0 };
+
+    let stcg = Math.max(0, g.stcgGross);
+    let ltcg = Math.max(0, g.ltcgGross);
+    let newStcl = Math.max(0, -g.stcgGross);
+    const newLtcl = Math.max(0, -g.ltcgGross);
+    const so = emptySetOff();
+
+    // 1) current-year STCL → current-year LTCG (STCG is already netted within head)
+    const a = Math.min(newStcl, ltcg);
+    ltcg -= a;
+    newStcl -= a;
+    so.currentStclVsLtcg = a;
+
+    // 2) brought-forward losses, oldest first
+    buckets.sort((x, y) => x.sy - y.sy);
+    for (const b of buckets) {
+      const s1 = Math.min(b.stcl, stcg); // bf STCL → STCG (saves the higher rate first)
+      stcg -= s1;
+      b.stcl -= s1;
+      const s2 = Math.min(b.stcl, ltcg); // bf STCL → LTCG
+      ltcg -= s2;
+      b.stcl -= s2;
+      const l1 = Math.min(b.ltcl, ltcg); // bf LTCL → LTCG only
+      ltcg -= l1;
+      b.ltcl -= l1;
+      so.broughtFwdStclUsed += s1 + s2;
+      so.broughtFwdLtclUsed += l1;
+    }
+    buckets = buckets.filter((b) => b.stcl > 1e-6 || b.ltcl > 1e-6);
+    if (newStcl > 1e-6 || newLtcl > 1e-6) buckets.push({ sy, stcl: newStcl, ltcl: newLtcl });
+
+    so.currentStclVsLtcg = round2(so.currentStclVsLtcg);
+    so.broughtFwdStclUsed = round2(so.broughtFwdStclUsed);
+    so.broughtFwdLtclUsed = round2(so.broughtFwdLtclUsed);
+    so.totalSetOff = round2(so.currentStclVsLtcg + so.broughtFwdStclUsed + so.broughtFwdLtclUsed);
+
+    if (sy === targetSy) result = { setOff: so, netStcg: round2(stcg), netLtcg: round2(ltcg) };
+  }
+
+  const cfBuckets: CarryForwardBucket[] = buckets
+    .map((b) => ({ fy: fyLabel(b.sy), stcl: round2(b.stcl), ltcl: round2(b.ltcl), expiresFy: fyLabel(b.sy + CARRY_FORWARD_YEARS) }))
+    .sort((a, b) => (a.fy < b.fy ? -1 : 1));
+
+  const carryForward: CarryForward = {
+    stcl: round2(cfBuckets.reduce((s, b) => s + b.stcl, 0)),
+    ltcl: round2(cfBuckets.reduce((s, b) => s + b.ltcl, 0)),
+    buckets: cfBuckets,
+    expiringFy: cfBuckets.length ? cfBuckets[0].expiresFy : null,
+  };
+  return { ...result, carryForward };
+}
+
+function emptySetOff(): LossSetOff {
+  return { currentStclVsLtcg: 0, broughtFwdStclUsed: 0, broughtFwdLtclUsed: 0, totalSetOff: 0 };
+}
+
 function fyBounds(fy: string): { start: Date; end: Date } {
   const sy = fyStartYear(fy);
   return {
@@ -127,6 +250,7 @@ interface DatedLot {
   qty: number;
   price: number; // per-share cost (fees folded in proportionally)
   date: Date;
+  isin: string | null;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -161,7 +285,7 @@ export async function computeTax(
       // Fold buy-side fees into per-share cost so gains are net of charges.
       const perShare = t.price + (t.quantity > 0 ? fees / t.quantity : 0);
       const arr = lots.get(key) ?? [];
-      arr.push({ qty: t.quantity, price: perShare, date: t.tradedAt });
+      arr.push({ qty: t.quantity, price: perShare, date: t.tradedAt, isin: t.isin ?? null });
       lots.set(key, arr);
     } else {
       fySet.add(fyOf(t.tradedAt));
@@ -176,6 +300,7 @@ export async function computeTax(
         disposals.push({
           symbol: key,
           exchange: t.exchange,
+          isin: lot.isin ?? t.isin ?? null,
           quantity: take,
           buyDate: lot.date.toISOString().slice(0, 10),
           sellDate: t.tradedAt.toISOString().slice(0, 10),
@@ -192,21 +317,33 @@ export async function computeTax(
     }
   }
 
-  // ---- Realized gains for the target FY -----------------------------------
+  // ---- Realized gains per FY + loss set-off / carry-forward ---------------
+  // Net each head per FY (within-head set-off), then run the chronological
+  // cross-head + brought-forward set-off engine through the target FY.
+  const perFy = new Map<string, FyGains>();
+  for (const d of disposals) {
+    const dfy = fyOf(new Date(d.sellDate));
+    const g = perFy.get(dfy) ?? { stcgGross: 0, ltcgGross: 0 };
+    if (d.term === "STCG") g.stcgGross += d.gain;
+    else g.ltcgGross += d.gain;
+    perFy.set(dfy, g);
+  }
+
   const fyDisposals = disposals.filter((d) => {
     const sd = new Date(d.sellDate);
     return sd >= start && sd <= end;
   });
-  let stcgGain = 0;
-  let ltcgGain = 0;
-  for (const d of fyDisposals) {
-    if (d.term === "STCG") stcgGain += d.gain;
-    else ltcgGain += d.gain;
-  }
-  const ltcgUsed = Math.min(Math.max(ltcgGain, 0), TAX_RULES.ltcgExemption);
+  const gross = perFy.get(targetFy) ?? { stcgGross: 0, ltcgGross: 0 };
+  const stcgGain = gross.stcgGross;
+  const ltcgGain = gross.ltcgGross;
+
+  const { setOff, netStcg, netLtcg, carryForward } = runSetOff(perFy, targetFy);
+
+  // The ₹1.25L exemption applies to taxable LTCG after loss set-off.
+  const ltcgUsed = Math.min(Math.max(netLtcg, 0), TAX_RULES.ltcgExemption);
   const ltcgRemaining = Math.max(0, TAX_RULES.ltcgExemption - ltcgUsed);
-  const stcgTax = Math.max(0, stcgGain) * TAX_RULES.stcgRate;
-  const ltcgTax = Math.max(0, ltcgGain - TAX_RULES.ltcgExemption) * TAX_RULES.ltcgRate;
+  const stcgTax = Math.max(0, netStcg) * TAX_RULES.stcgRate;
+  const ltcgTax = Math.max(0, netLtcg - TAX_RULES.ltcgExemption) * TAX_RULES.ltcgRate;
 
   // ---- Open lots valued at live prices ------------------------------------
   const openSymbols: { symbol: string; exchange: string }[] = [];
@@ -319,8 +456,23 @@ export async function computeTax(
     );
   }
 
-  const availableFys = [...fySet].sort().reverse();
-  if (!availableFys.includes(targetFy)) availableFys.unshift(targetFy);
+  if (setOff.totalSetOff > 0) {
+    warnings.push(
+      `₹${Math.round(setOff.totalSetOff).toLocaleString("en-IN")} of capital losses were set off this year ` +
+        "(short-term losses against both STCG & LTCG, long-term losses against LTCG only), reducing the tax shown.",
+    );
+  }
+  if (carryForward.stcl + carryForward.ltcl > 0) {
+    warnings.push(
+      `₹${Math.round(carryForward.stcl + carryForward.ltcl).toLocaleString("en-IN")} of unabsorbed losses carry ` +
+        `forward to future years (file your ITR on time to preserve them; they lapse after 8 years).`,
+    );
+  }
+
+  // Stable option set: every FY with realized disposals plus the current FY,
+  // independent of which FY is selected — so switching the FY doesn't drop the
+  // current (or any) option from the dropdown.
+  const availableFys = [...new Set([fyOf(asOf), ...fySet, targetFy])].sort().reverse();
 
   return {
     fy: targetFy,
@@ -328,11 +480,15 @@ export async function computeTax(
     realized: {
       stcgGain: round2(stcgGain),
       ltcgGain: round2(ltcgGain),
+      netStcg: round2(netStcg),
+      netLtcg: round2(netLtcg),
+      setOff,
       stcgTax: round2(stcgTax),
       ltcgTax: round2(ltcgTax),
       totalTax: round2(stcgTax + ltcgTax),
       disposals: fyDisposals.sort((a, b) => (a.sellDate < b.sellDate ? 1 : -1)),
     },
+    carryForward,
     ltcgAllowance: { exemption: TAX_RULES.ltcgExemption, used: round2(ltcgUsed), remaining: round2(ltcgRemaining) },
     unrealized: { stcgGain: round2(uStcg), ltcgGain: round2(uLtcg), lots: taxLots },
     harvest: {

@@ -70,6 +70,11 @@ Broker export (CSV/XLSX)
   account. `User.passwordHash` is nullable so OAuth-only users need no password.
 - **WatchlistItem** — a tracked (not necessarily owned) stock, unique on
   `(portfolioId, symbol, exchange)`.
+- **FundHolding** — one mutual-fund position (scheme, units, avg NAV, optional
+  cost value), unique on `(portfolioId, dedupeKey)` so a re-imported CAS upserts.
+  Imported via MF CSV or a CAMS/KFintech CAS; valued live against mfapi.in NAV.
+- **FundSchemeMap** — permanent scheme-name/ISIN → mfapi.in scheme-code cache (the
+  MF analogue of `SymbolMap`), so each scheme is resolved once.
 - **Transaction** — one executed buy/sell (`type`, `quantity`, `price`, `fees`,
   `tradedAt`). The ledger powers FIFO realized P&L, XIRR, and the invested-over-
   time chart, independent of the current-holdings view. `ImportBatch.kind`
@@ -84,13 +89,14 @@ Broker export (CSV/XLSX)
 | `db.ts` | Singleton PrismaClient (avoids dev hot-reload connection leaks). |
 | `auth.ts` | Password hashing, session create/clear, `getSessionUser()`, and `upsertOAuthUser()` (find/link/create from an OAuth profile). |
 | `oauth.ts` | Self-hosted OAuth 2.0 layer: a `PROVIDERS` registry (Google now), authorize-URL building, code exchange, profile fetch, and `configuredProviders()` (drives which buttons the UI shows). Add a provider = one registry entry. |
-| `parsers/` | `utils.ts` (CSV/XLSX → rows, header detection, number cleaning), holdings parsers per broker (`zerodha`, `groww`, `generic`), and **transaction parsers** (`transactions.ts`: Zerodha tradebook, **Zerodha Tax P&L statement**, generic tradebook). `index.ts` auto-detects format for both `parsePortfolioFile()` and `parseTransactionsFile()`. Adding a broker = one new parser + one line in `index.ts`. |
+| `parsers/` | `utils.ts` (CSV/XLSX → rows, header detection, number cleaning), holdings parsers per broker (`zerodha`, `groww`, `generic`), **transaction parsers** (`transactions.ts`), and **fund parsers** (`funds.ts`: `pdfToText` via pdfjs-dist, `parseCamsCasText` for CAMS/KFintech CAS, `parseFundsCsv` for generic MF CSV). `index.ts` exposes `parseImportFile()` — the unified dispatcher returning a discriminated `{kind:"HOLDINGS"|"FUNDS"}` (PDF → CAS funds; CSV/XLSX → broker stocks → MF CSV → generic stocks) — plus `parseTransactionsFile()`. |
 | `quotes.ts` | `getQuotes()` (cache-first batch fetch), `getStockDetail()` (quote + profile + price history for the detail page), `searchStocks()` (watchlist typeahead), `resolveIsin()`, `toYahooSymbol()`. |
 | `market.ts` | Public homepage data: NSE/BSE indices, top movers per cap bucket, and mutual-fund NAV/returns (via free `mfapi.in`), through the shared `cache.ts` TTL store. `INDEX_REGISTRY` (slug↔symbol whitelist) + `getIndexDetail()` power the clickable index detail pages. |
 | `metrics.ts` | `computeMetrics()` — enriches holdings with live data and derives totals, P&L, day change, sector/broker allocation, and concentration (top-1/3/5, Herfindahl index). Pure function over `Holding[]`. |
 | `pnl.ts` | `computePnl()` — FIFO realized P&L, open positions valued live, an invested-over-time series, and `computeXirr()` (Newton-Raphson + bisection). Pure over `Transaction[]` (+ live quotes). |
 | `analytics.ts` | **Cross-broker analytics.** `computeCrossBroker()` merges broker-tagged `Holding` rows into true per-stock positions → market-cap allocation (`CAP_TIERS`), real single-stock concentration, and the stocks split across brokers. `benchmarkVsNifty()` replays the user's exact buy/sell cashflows into the Nifty 50 (`^NSEI`) and compares money-weighted XIRR + alpha (reuses `computePnl`/`computeXirr`). |
-| `tax.ts` | `computeTax()` — capital-gains intelligence over `Transaction[]`. FIFO-dates each disposal to classify **STCG vs LTCG** (Indian FY, 12-month rule), computes realized gains/tax per FY, tracks the **₹1.25L LTCG free allowance**, and surfaces three planning levers: **tax-loss harvesting**, **tax-free-LTCG to book**, and a **holding-period countdown** (STCG winners nearing the LTCG line). Rates/thresholds live in `TAX_RULES` (post-Jul-2024 regime; one place to update). |
+| `funds.ts` | **Mutual funds** (the first non-stock asset). `resolveScheme()` maps a scheme name/ISIN to an mfapi.in scheme code, cached in `FundSchemeMap` (the MF analogue of `SymbolMap`). `computeFundMetrics()` prices `FundHolding` units at live NAV (cached in `fundCache`), derives P&L and AMC allocation. `fundDedupeKey()` is the upsert key (ISIN+folio, else normalized-name+folio). |
+| `tax.ts` | `computeTax()` — capital-gains intelligence over `Transaction[]`. FIFO-dates each disposal to classify **STCG vs LTCG** (Indian FY, 12-month rule), computes realized gains/tax per FY, tracks the **₹1.25L LTCG free allowance**, and surfaces three planning levers (**loss harvesting**, **tax-free-LTCG to book**, **holding-period countdown**). `runSetOff()` applies multi-year **loss set-off & carry-forward** (STCL→STCG then LTCG; LTCL→LTCG only; 8-yr expiry) so tax is on *net* gains after set-off, with a carry-forward ledger. Rates/thresholds in `TAX_RULES`. |
 | `refresh.ts` | `refreshAllQuotes()` warms the QuoteCache + market snapshot for every held/watchlisted symbol; `isMarketLikelyOpen()` gates off-hours. Driven by the boot timer and `/api/cron/refresh`. |
 | `cache.ts` | `TTLCache` — single-instance TTL cache with serve-stale-on-failure; the swap point for a Redis-backed store. |
 | `rate-limit.ts` | `rateLimit()` (fixed-window, per-user) + `Semaphore` (`llmQueue` bounds concurrent LLM calls). |
@@ -139,18 +145,19 @@ else ───────────────────► rule-based  (n
 | `/api/auth/signup` `/login` `/logout` | POST | Cookie-session auth (zod-validated; login is timing-safe). |
 | `/api/auth/oauth/[provider]` | GET | Starts OAuth: sets a CSRF state cookie, redirects to the provider. |
 | `/api/auth/oauth/[provider]/callback` | GET | Verifies state, exchanges code, provisions/links user, starts session. |
-| `/api/import/parse` | POST | multipart upload → detect broker → return parsed preview (no DB write). |
+| `/api/import/parse` | POST | multipart upload (+ optional `password` for CAS PDFs) → `parseImportFile` → discriminated `{kind:"HOLDINGS"\|"FUNDS"}` preview (no DB write). Returns `{needsPassword}` for an encrypted PDF. |
 | `/api/import/commit` | POST | Resolve symbols, merge dupes, upsert Holdings. |
+| `/api/import/funds/commit` | POST | Resolve mfapi.in scheme codes, merge dupes, upsert FundHoldings (kind=FUNDS batch). |
 | `/api/insights` | GET / POST | Fetch latest / generate insight. Per-user rate-limited; LLM calls run through a concurrency queue. `maxDuration=300`. |
 | `/api/market` | GET | Public homepage snapshot (indices, movers, funds); server-cached. |
-| `/api/portfolio` | GET | Live portfolio metrics for the dashboard's 30s poll. |
+| `/api/portfolio` | GET | Live stock `metrics` + mutual-fund `funds` metrics for the dashboard's 30s poll. |
 | `/api/stock/[symbol]` | GET | Live detail + price history for one stock (range param). |
 | `/api/index/[slug]` | GET | Live detail + price history for one market index (slug validated against `INDEX_REGISTRY`). |
 | `/api/search/stocks` | GET | Auth-gated NSE/BSE typeahead for the watchlist. |
 | `/api/watchlist` | GET / POST / DELETE | List (live), add, remove watchlist stocks. |
 | `/api/transactions` | GET | P&L summary + ledger; polled by the transactions page. |
 | `/api/transactions/parse` `/commit` | POST | Tradebook **or P&L statement** upload → preview → idempotent commit (dedup key quantizes qty/price to absorb float round-trip). |
-| `/api/tax` | GET | Capital-gains tax summary for a financial year (`?fy=`); polled by the tax page. |
+| `/api/tax` | GET | Capital-gains tax summary for a financial year (`?fy=`), incl. loss set-off + carry-forward ledger; polled by the tax page. |
 | `/api/analytics` | GET | Cross-broker merged positions + market-cap allocation (holdings) and the Nifty 50 benchmark (transactions); polled by the analytics page for live prices. |
 | `/api/cron/refresh` | GET | Secret-protected quote refresh for serverless schedulers. |
 
@@ -170,8 +177,9 @@ lookup) happens in `getSessionUser()` in the app layout and every API route.
   plus a "Continue with Google" button (shown only when Google OAuth is configured).
 - `(app)/layout.tsx` — auth-guarded shell with `Nav`; redirects to `/login` if no session.
 - `(app)/dashboard` — `DashboardView` (client): live `IndicesStrip` (cards link
-  to the index detail page), summary stat cards, `AllocationCharts`, sortable
-  `HoldingsTable` (rows link to the stock page); polls `/api/portfolio` every 30s.
+  to the index detail page), combined **Net worth** stat cards (stocks + funds),
+  `AllocationCharts`, sortable `HoldingsTable`, and a `FundsTable` mutual-fund
+  section; polls `/api/portfolio` every 30s. Handles stocks-only, funds-only, or both.
 - `(app)/stock/[symbol]` — `StockDetailView`: price chart (1M/6M/1Y/5Y),
   fundamentals, company profile, add-to-watchlist toggle.
 - `(app)/index/[slug]` — `IndexDetailView`: index price chart (1M/6M/1Y/5Y),
@@ -183,10 +191,13 @@ lookup) happens in `getSessionUser()` in the app layout and every API route.
 - `(app)/analytics` — `AnalyticsView`: the Nifty 50 benchmark hero (your XIRR vs
   Nifty + alpha), true cross-broker concentration, a "held across brokers" overlap
   card, market-cap + sector donuts, and the merged-positions table. Polls live.
-- `(app)/tax` — `TaxView`: FY selector, realized STCG/LTCG + estimated-tax cards,
-  the ₹1.25L LTCG-allowance meter, three harvesting panels (loss harvesting,
-  tax-free-LTCG to book, almost-long-term countdown), and the realized-disposals table.
-- `(app)/import` — `ImportFlow` (drag-drop → preview table → commit → result).
+- `(app)/tax` — `TaxView`: FY selector, realized STCG/LTCG +
+  estimated-tax cards, the ₹1.25L LTCG-allowance meter, a **loss set-off & carry-forward**
+  panel (gross → set off → taxable, plus a carry-forward ledger by vintage with expiry),
+  three harvesting panels, and the realized-disposals table.
+- `(app)/import` — `ImportFlow` (drag-drop → preview → commit → result), now
+  accepting CSV/XLSX **and CAS PDFs**: renders a holdings or funds preview by `kind`,
+  prompts for a PDF password when the CAS is encrypted, and commits to the matching route.
 - `(app)/insights` — `InsightsView` (score dial, summary, red flags, strengths,
   diversification, severity-ranked risks, actionable suggestions).
 - Theming: root `layout.tsx` sets the `.dark` class before paint (defaults dark);
@@ -376,6 +387,69 @@ benchmark XIRR 18.8% vs Nifty 2.6% (+16.2pp). Page returns 200; the proxy gate
 redirects (307) unauthenticated. **MF look-through overlap was deferred** — funds
 aren't imported as holdings and there's no free fund-constituent data source.
 
+### Phase 12 — mutual funds as a first-class asset + CAS / MF-Central import
+
+Roadmap #2, and the app's first non-stock asset class. The import pipeline was
+entirely stock-shaped; this generalizes it and brings mutual funds in.
+
+**12a — Data model + valuation.** New `FundHolding` (scheme, units, avg NAV, cost
+value, `dedupeKey` upsert key) and `FundSchemeMap` (the MF analogue of `SymbolMap`).
+`funds.ts`: `resolveScheme()` maps a scheme name/ISIN to an mfapi.in scheme code
+(cached), and `computeFundMetrics()` prices units at live NAV (`fundCache`, 30-min
+TTL) and derives P&L + AMC allocation.
+
+**12b — Unified import.** `parseImportFile()` replaces the holdings-only entry point
+with a discriminated dispatcher (`{kind:"HOLDINGS"|"FUNDS"}`): PDFs → CAS funds;
+CSV/XLSX → broker stocks → MF CSV → generic stocks. The parse route gained an optional
+`password` field and a `{needsPassword}` response; a new `/api/import/funds/commit`
+upserts funds while the proven holdings commit is untouched. `ImportFlow` renders
+either preview, prompts for a CAS password, and commits to the matching route.
+
+**12c — CAS PDF reader.** `pdfToText()` extracts text from a (password-protected) PDF
+via `pdfjs-dist` (legacy build, dynamic-imported; kept in `serverExternalPackages` or
+Turbopack breaks its worker resolution). `parseCamsCasText()` is a **pure** text→funds
+parser (per-scheme blocks delimited by ISIN; reads closing units / NAV / cost value),
+so it's unit-testable without a real statement.
+
+**12d — Surfacing.** `/api/portfolio` returns both stock `metrics` and `funds`; the
+dashboard shows a combined net-worth, a `FundsTable`, and works for funds-only users.
+
+**12e — Verification.** `tsc` clean. MF-CSV path verified live end-to-end (parse →
+commit → mfapi.in NAV resolution → dashboard): PPFAS + UTI Nifty 50 priced at live NAV,
+categories resolved, idempotent re-import, funds-only dashboard 200, non-CAS PDF → clean
+422. `parseCamsCasText` + `parseFundsCsv` unit-verified against synthetic data;
+`pdfToText` verified on a real PDF. **The CAMS CAS parser is best-effort and untested on
+a real statement** (no sample available) — validate before relying on it.
+
+### Phase 13 — deepen tax: loss set-off, carry-forward & ITR report
+
+Roadmap #4 (the high-value slice). The tax engine previously taxed only positive gains;
+this makes it honest about losses.
+
+**13a — Loss set-off & carry-forward.** `runSetOff()` processes financial years
+chronologically through the target FY, applying the IT Act rules: within-head netting,
+current-year STCL against current LTCG, brought-forward STCL against STCG (higher rate)
+then LTCG, LTCL against LTCG only, and an 8-assessment-year carry-forward (oldest losses
+used first, then they expire). Tax is now computed on *net* gains after set-off, the
+₹1.25L exemption applies post-set-off, and `TaxSummary` carries the resulting
+`carryForward` ledger (by origin FY, with expiry).
+
+**13b — A CG-report CSV export was built then removed.** A per-broker, single-year
+download just duplicated the broker's own Tax P&L. The differentiated value is the
+*engine* — cross-broker consolidation + multi-year set-off/carry-forward — surfaced in the
+on-screen panel; an export only earns its place if it foregrounds the carry-forward
+schedule and consolidated-across-brokers view (and doesn't overclaim "ITR-ready": no
+31-Jan-2018 grandfathering / Schedule 112A). Left out for now.
+
+**13c — Deferred.** Debt/gold instrument classification — the engine is transaction-based
+and today's ledger is all listed equity (funds have no transaction ledger yet), so there's
+nothing to classify until that exists.
+
+**13d — Verification.** `runSetOff` unit-tested (STCL offsets STCG before LTCG; LTCL never
+offsets STCG; 8-yr expiry 2023-24 → 2031-32) and confirmed live: 8 trades → `/api/tax?fy=
+2024-25` shows bf STCL 2000 + bf LTCL 2000, net 3000/1000, tax ₹600. Gains-only FYs are
+unchanged (net = gross), so Phase 10's ₹68.24 figure still holds. `tsc` clean.
+
 ---
 
 ## 8. Running it
@@ -414,17 +488,19 @@ OAuth pair to enable "Continue with Google" (redirect URI:
   without changing metrics/insights.
 - **More OAuth providers:** add a registry entry in `oauth.ts` (GitHub, Apple…).
 - **Next up (product differentiators, ranked):** Done so far — tax intelligence
-  (Phase 10) and cross-broker analytics (Phase 11).
-  1. **Mutual-fund look-through overlap** — the deferred slice of cross-broker
-     analytics ("your real RELIANCE exposure across direct + 3 funds is 11%").
-     Blocked on importing funds as holdings *and* on a fund-constituent data source
-     (mfapi.in is NAV-only); index-fund baskets are a deterministic first cut.
-  2. **CAS / MF Central import** — one-upload onboarding: NSDL/CDSL CAS for all
-     demat holdings + CAMS/KFintech for all mutual funds (also unblocks #1).
-  3. **Net worth + alerts** — manual FD/EPF/gold/real-estate entries for true net
-     worth; price/drawdown/dividend alerts for daily-habit retention.
-  4. Deepen tax: short/long-term **loss carry-forward & set-off** rules, debt/gold
-     instrument classification, downloadable ITR-ready CG report.
+  (Phase 10), cross-broker analytics (Phase 11), mutual funds + CAS/MF import (Phase 12),
+  deepen tax: loss set-off + carry-forward (Phase 13).
+  1. **Mutual-fund look-through overlap** — "your real RELIANCE exposure across direct
+     + 3 funds is 11%." Now half-unblocked: `FundHolding` rows exist (Phase 12); only a
+     fund-constituent data source remains (mfapi.in is NAV-only). Index-fund baskets are
+     a deterministic first cut; AMC monthly disclosures the fuller one. Extends `/analytics`.
+  2. **NSDL/CDSL demat CAS** — the other half of CAS import (all demat holdings in one
+     PDF). The PDF pipeline exists; needs an NSDL/CDSL text parser emitting `HOLDINGS`.
+     Validate Phase 12's CAMS parser on a real statement first.
+  3. **Net worth + alerts** — manual FD/EPF/gold/real-estate (funds already counted);
+     price/drawdown/dividend alerts for daily-habit retention.
+  4. **Deepen tax — debt/gold classification** (remaining slice). Needs instrument-type
+     tagging + post-Apr-2023 debt-fund rules; blocked until funds have a transaction ledger.
   - Also open: scheduled insight pre-generation, dividends/corporate actions in
     P&L, per-stock news, and live broker sync (Kite Connect).
 

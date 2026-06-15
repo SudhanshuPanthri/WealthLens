@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { TrendingDown, Gift, Hourglass, Info, Receipt } from "lucide-react";
+import { TrendingDown, Gift, Hourglass, Info, Receipt, Layers } from "lucide-react";
 import type { TaxSummary, HarvestCandidate } from "@/lib/tax";
 import { formatINR, formatPct, pnlClass } from "@/lib/format";
 
@@ -118,6 +118,68 @@ export default function TaxView({ initial }: { initial: TaxSummary }) {
         </p>
       </div>
 
+      {/* Loss set-off & carry-forward */}
+      {(r.setOff.totalSetOff > 0 || summary.carryForward.stcl + summary.carryForward.ltcl > 0) && (
+        <div className="rounded-2xl border border-border bg-surface p-5">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Layers className="h-4 w-4 text-accent" /> Loss set-off &amp; carry-forward
+          </h2>
+          <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="space-y-1.5 text-sm">
+              <Row label="Short-term gain (gross)" value={formatINR(r.stcgGain, true)} valueClass={pnlClass(r.stcgGain)} />
+              <Row label="Long-term gain (gross)" value={formatINR(r.ltcgGain, true)} valueClass={pnlClass(r.ltcgGain)} />
+              {r.setOff.totalSetOff > 0 && (
+                <Row label="Losses set off this year" value={`−${formatINR(r.setOff.totalSetOff)}`} valueClass="text-accent" />
+              )}
+              <div className="!mt-2 border-t border-border pt-2">
+                <Row label="Taxable short-term" value={formatINR(r.netStcg)} bold />
+                <Row label="Taxable long-term" value={formatINR(r.netLtcg)} bold />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted">Carried forward</p>
+              {summary.carryForward.buckets.length === 0 ? (
+                <p className="mt-2 text-sm text-muted">No unabsorbed losses carry forward from {fy}.</p>
+              ) : (
+                <>
+                  <p className="mt-1.5 text-sm">
+                    <span className="font-semibold text-ink">{formatINR(summary.carryForward.stcl)}</span> short-term ·{" "}
+                    <span className="font-semibold text-ink">{formatINR(summary.carryForward.ltcl)}</span> long-term
+                    {summary.carryForward.expiringFy && (
+                      <span className="text-muted"> · earliest lapses after {summary.carryForward.expiringFy}</span>
+                    )}
+                  </p>
+                  <table className="mt-2 w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-muted">
+                        <th className="py-1 font-medium">Booked</th>
+                        <th className="py-1 text-right font-medium">STCL</th>
+                        <th className="py-1 text-right font-medium">LTCL</th>
+                        <th className="py-1 text-right font-medium">Lapses after</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.carryForward.buckets.map((b) => (
+                        <tr key={b.fy} className="border-t border-border/50">
+                          <td className="py-1 font-mono">{b.fy}</td>
+                          <td className="py-1 text-right font-mono">{b.stcl > 0 ? formatINR(b.stcl) : "—"}</td>
+                          <td className="py-1 text-right font-mono">{b.ltcl > 0 ? formatINR(b.ltcl) : "—"}</td>
+                          <td className="py-1 text-right font-mono text-muted">{b.expiresFy}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-muted">
+            Short-term losses offset both STCG &amp; LTCG; long-term losses offset only LTCG. Unabsorbed
+            losses carry forward up to 8 years — file your ITR on time to preserve them.
+          </p>
+        </div>
+      )}
+
       {/* Harvesting opportunities */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <HarvestPanel
@@ -225,6 +287,25 @@ export default function TaxView({ initial }: { initial: TaxSummary }) {
         {(summary.rules.stcgRate * 100).toFixed(0)}%, LTCG {(summary.rules.ltcgRate * 100).toFixed(1)}% above ₹1.25L/yr.
         Debt, gold, unlisted and international holdings follow different rules and aren&apos;t modelled. Not tax advice.
       </p>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  valueClass = "",
+  bold = false,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+  bold?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className={`text-muted ${bold ? "font-medium text-ink" : ""}`}>{label}</span>
+      <span className={`font-mono ${bold ? "font-semibold" : ""} ${valueClass}`}>{value}</span>
     </div>
   );
 }

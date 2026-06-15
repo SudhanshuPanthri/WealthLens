@@ -99,26 +99,80 @@ Everything below is implemented, `tsc --noEmit` clean, and smoke-tested live.
   auth gate 307. **MF overlap deferred** (see roadmap) — no fund holdings imported
   and no free fund-constituent data source.
 
+### Phase 12 — mutual funds as a first-class asset + CAS import (most recent work)
+- **Mutual funds + CAS / MF-Central import** — roadmap #2. The app's first non-stock
+  asset class. New `FundHolding` + `FundSchemeMap` models, `lib/funds.ts`,
+  `parsers/funds.ts`, a unified import dispatcher, and fund surfacing on the dashboard.
+  - **Unified import** — `parseImportFile()` (in `parsers/index.ts`) is the new entry
+    point: returns a discriminated `{kind:"HOLDINGS"|"FUNDS"}`. CSV/XLSX tries broker
+    stock parsers → MF-CSV → generic stock; PDFs go to the CAS parser. The parse route
+    routes funds to a new `/api/import/funds/commit` (holdings commit unchanged).
+  - **MF CSV** (`parseFundsCsv`) — generic fund CSV: scheme + units (+ avg-NAV or
+    invested; optional isin/folio/amc). **Fully verified live.**
+  - **CAMS/KFintech CAS PDF** — `pdfToText()` (pdfjs-dist, password-aware) +
+    `parseCamsCasText()` (pure text→funds, per-scheme blocks by ISIN, reads closing
+    units / NAV / cost value). **Best-effort, no real sample tested** — the pure text
+    parser is unit-verified against a synthetic CAMS blob; pdfToText is verified on a
+    real PDF; only the encrypted-real-CAS composition is unproven. Password flow:
+    `PdfPasswordError` → parse route returns `{needsPassword}` → UI prompts.
+  - **Valuation** — `resolveScheme()` maps scheme name/ISIN → mfapi.in scheme code
+    (cached in `FundSchemeMap`); `computeFundMetrics()` prices units at live NAV,
+    derives P&L + AMC allocation. Dashboard now shows a combined **Net worth**
+    (stocks + funds), a **Mutual funds** table, and handles funds-only portfolios.
+- Verified live (MF CSV: PPFAS + UTI Nifty 50): parse→commit→NAV resolution→dashboard.
+  Both schemes priced (UTI NAV 165.52, PPFAS 89.29), categories resolved, idempotent
+  re-import (count stays 2), dashboard 200 funds-only, non-CAS PDF → clean 422. `tsc` clean.
+
+### Phase 13 — deepen tax: loss set-off, carry-forward & ITR report (most recent work)
+- **Loss set-off + carry-forward engine** (`lib/tax.ts`, `runSetOff()`) — the tax
+  engine used to tax only positive gains; now it applies the real Indian rules across
+  financial years: within-head netting, **current-year STCL → LTCG**, **brought-forward
+  STCL → STCG (higher rate) then LTCG**, **LTCL → LTCG only**, **8-year carry-forward**
+  (oldest used first, then expires; loss booked in FY Y lapses after FY Y+8). The
+  ₹1.25L LTCG exemption now applies to taxable LTCG *after* set-off. `TaxSummary.realized`
+  gained `netStcg`/`netLtcg`/`setOff`; new top-level `carryForward` ledger (by origin FY
+  + expiry). `TaxView` shows a "Loss set-off & carry-forward" panel (shown only when
+  there's set-off/carry-forward — hidden on a gains-only/empty FY).
+- **CG report download was built then removed** — a per-broker, single-year CSV
+  duplicated what the broker's own Tax P&L already gives. The *engine* (cross-broker
+  consolidation + multi-year set-off/carry-forward) is the moat-aligned value, not the
+  export; the on-screen set-off/carry-forward panel keeps that. If a CG export returns,
+  it must foreground what a broker can't: consolidated-across-brokers + the carry-forward
+  schedule (and not overclaim "ITR-ready" — no 31-Jan-2018 grandfathering / Schedule 112A).
+- **Debt/gold classification deferred** — the tax engine runs off the *stock* transaction
+  ledger (all equity, STT-paid); funds have no transaction ledger yet, so there's nothing
+  to classify. Revisit when fund transactions exist.
+- Verified: unit-tested `runSetOff` (STCL offsets STCG first, LTCL never touches STCG,
+  8yr expiry 2023-24→2031-32) AND live (import 8 trades → `/api/tax?fy=2024-25`: bf STCL
+  2000 + bf LTCL 2000, net 3000/1000, tax ₹600). Gains-only FYs unchanged (net=gross),
+  so the earlier ₹68.24 verification still holds. `tsc` clean.
+
 ---
 
 ## 3. Discussed but NOT yet built (the roadmap)
 
 Ranked product differentiators. Done: **Tax intelligence** (Phase 10),
-**Cross-broker analytics** (Phase 11). Remaining build order:
+**Cross-broker analytics** (Phase 11), **Mutual funds + CAS/MF import** (Phase 12),
+**Deepen tax — loss set-off & carry-forward** (Phase 13). Remaining build order:
 
-1. **Mutual-fund look-through overlap** — the one piece of cross-broker analytics
-   deferred: "your real RELIANCE exposure across direct + 3 funds is 11%." Blocked
-   on two things — (a) funds aren't imported as holdings (parsers are stock-only),
-   and (b) there's **no free fund-constituent data source** (mfapi.in gives NAV
-   only). Needs a fund-import path + a constituent dataset (AMC monthly disclosures,
-   or deterministic index-fund baskets as a first cut).
-2. **CAS / MF Central import** — one-upload onboarding: NSDL/CDSL **CAS** (all
-   demat holdings, any broker, one file) + CAMS/KFintech (all mutual funds). Would
-   also unblock #1 by getting fund holdings into the system.
-3. **Net worth + alerts** — manual FD/EPF/gold/real-estate → true net worth;
-   price/drawdown/dividend alerts for daily-habit retention.
-4. **Deepen tax** — loss carry-forward & set-off rules, debt/gold instrument
-   classification, downloadable ITR-ready capital-gains report.
+1. **Mutual-fund look-through overlap** — "your real RELIANCE exposure across direct
+   + 3 funds is 11%." **Now half-unblocked:** fund holdings exist (Phase 12), so only
+   the **fund-constituent data source** remains — mfapi.in gives NAV only. Needs a
+   constituent dataset (AMC monthly portfolio disclosures, or deterministic index-fund
+   baskets as a first cut) joined onto `FundHolding` to compute look-through exposure
+   against `Holding`. This would extend the `/analytics` page.
+2. **NSDL/CDSL demat CAS** — the other half of CAS import: all demat (stock/ETF)
+   holdings across brokers in one PDF. The PDF pipeline (`pdfToText` + a CAS parser)
+   exists; needs an NSDL/CDSL text parser emitting `HOLDINGS`. (Mostly overlaps the
+   stock import; value is all-brokers-in-one-file.) **Validate Phase 12's CAMS parser
+   against a real statement first** — it's untested on a real file.
+3. **Net worth + alerts** — manual FD/EPF/gold/real-estate → true net worth (funds
+   already counted); price/drawdown/dividend alerts for daily-habit retention.
+4. **Deepen tax — debt/gold classification** (the remaining slice; set-off &
+   carry-forward shipped in Phase 13). Needs instrument-type tagging +
+   the post-Apr-2023 debt-fund rules (no LTCG benefit, slab rate). Blocked until funds
+   have a transaction ledger — the tax engine is transaction-based and today's ledger
+   is all equity.
 
 Also previously offered (lower priority): scheduled insight pre-generation,
 dividends/corporate actions in P&L, per-stock news, live broker sync (Kite Connect).
@@ -128,21 +182,25 @@ dividends/corporate actions in P&L, per-stock news, live broker sync (Kite Conne
 ## 4. Where things live (quick map)
 
 ```
-src/lib/         analytics.ts  tax.ts  pnl.ts  metrics.ts  quotes.ts  market.ts
-                 parsers/ (holdings + transactions incl. parseZerodhaPnl)
+src/lib/         analytics.ts  funds.ts  tax.ts  pnl.ts  metrics.ts  quotes.ts
+                 market.ts  parsers/ (holdings + transactions + funds; index.ts
+                   exposes parseImportFile — the unified HOLDINGS|FUNDS dispatcher)
                  insights/ (rules|gemini|openrouter|claude + dispatcher)
                  cache.ts  rate-limit.ts  log.ts  format.ts  auth.ts  oauth.ts
 src/app/api/     analytics  tax  transactions(+parse/commit)  stock/[symbol]
                  index/[slug]  watchlist  search/stocks  market  portfolio
+                 import/(parse | commit | funds/commit)
                  insights  cron/refresh  auth/(login|signup|logout|oauth)
 src/app/(app)/   dashboard  analytics  stock/[symbol]  index/[slug]  watchlist
                  transactions  tax  import  insights
-src/components/  AnalyticsView  TaxView  IndexDetailView  StockDetailView
-                 TransactionsView  IndicesStrip  DashboardView  Nav  ThemeToggle ...
+src/components/  AnalyticsView  TaxView  FundsTable  IndexDetailView
+                 StockDetailView  TransactionsView  DashboardView  ImportFlow
+                 IndicesStrip  Nav  ThemeToggle ...
 src/instrumentation.ts + instrumentation-node.ts   (boot: DNS + refresh timer)
 proxy.ts         auth gate (Next 16's renamed middleware)
-prisma/schema.prisma   User Portfolio Holding Transaction WatchlistItem
-                       ImportBatch QuoteCache SymbolMap Insight OAuthAccount Session
+prisma/schema.prisma   User Portfolio Holding Transaction WatchlistItem FundHolding
+                       FundSchemeMap ImportBatch QuoteCache SymbolMap Insight
+                       OAuthAccount Session
 ARCHITECTURE.md  full design + phase log
 ```
 
@@ -159,6 +217,10 @@ ARCHITECTURE.md  full design + phase log
   -RedirectStandardOutput` has failed here ("%1 is not a valid Win32 application").
 - **IPv4-first DNS** is forced at boot (`instrumentation-node.ts`) — undici/`fetch`
   stalls on `api.mfapi.in`'s broken IPv6 path otherwise.
+- **`pdfjs-dist` must stay in `serverExternalPackages`** (`next.config.ts`) — if
+  Turbopack bundles it, its runtime worker resolution fails ("Setting up fake worker
+  failed … cannot find pdf.worker.mjs") and PDF parsing 500s. `pdfToText` dynamic-
+  imports the legacy build (`pdfjs-dist/legacy/build/pdf.mjs`).
 - `.env` holds all secrets (DB URL, AUTH_SECRET, Google OAuth, OpenRouter key, etc.)
   — never commit it; it is the only place secrets live. Insights work with no keys.
 - Test accounts created during verification are cleaned up — none persist in the DB.
