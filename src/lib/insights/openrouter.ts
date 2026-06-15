@@ -9,7 +9,7 @@ const JSON_SHAPE = `Return ONLY a JSON object (no markdown, no prose, no code fe
 {
   "healthScore": number (0-100),
   "headline": string,
-  "summary": string (2-3 paragraphs),
+  "summary": string (1-2 short paragraphs),
   "strengths": string[] (2-5),
   "risks": [{ "severity": "low"|"medium"|"high", "title": string, "detail": string }] (most severe first),
   "redFlags": string[] (empty if none),

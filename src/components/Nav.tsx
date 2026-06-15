@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers, LogOut } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
+import UserMenu from "@/components/UserMenu";
 
 const LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -15,15 +16,16 @@ const LINKS = [
   { href: "/insights", label: "AI Insights", icon: Sparkles },
 ];
 
-export default function Nav({ userName }: { userName: string }) {
+export default function Nav({
+  userName,
+  userEmail,
+  userAvatar,
+}: {
+  userName: string;
+  userEmail: string;
+  userAvatar?: string | null;
+}) {
   const pathname = usePathname();
-  const router = useRouter();
-
-  async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
-    router.refresh();
-  }
 
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-bg/85 backdrop-blur">
@@ -40,7 +42,7 @@ export default function Nav({ userName }: { userName: string }) {
                 <Link
                   key={href}
                   href={href}
-                  className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm ${
+                  className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm ${
                     active ? "bg-surface-2 text-ink" : "text-muted hover:text-ink"
                   }`}
                 >
@@ -52,15 +54,8 @@ export default function Nav({ userName }: { userName: string }) {
           </nav>
         </div>
         <div className="flex items-center gap-3">
-          <span className="hidden text-sm text-muted sm:block">{userName}</span>
           <ThemeToggle />
-          <button
-            onClick={logout}
-            title="Sign out"
-            className="rounded-lg p-2 text-muted hover:bg-surface-2 hover:text-ink"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
+          <UserMenu name={userName} email={userEmail} avatarUrl={userAvatar} />
         </div>
       </div>
     </header>

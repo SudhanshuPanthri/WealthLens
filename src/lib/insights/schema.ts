@@ -5,7 +5,7 @@ import type { PortfolioMetrics } from "../metrics";
 export const InsightSchema = z.object({
   healthScore: z.number().describe("Overall portfolio health, 0-100. Be discriminating: 50 is average."),
   headline: z.string().describe("One punchy sentence summarizing the portfolio's state."),
-  summary: z.string().describe("2-3 paragraph plain-language assessment of the portfolio."),
+  summary: z.string().describe("1-2 short paragraph plain-language assessment of the portfolio."),
   strengths: z.array(z.string()).describe("What this portfolio gets right. 2-5 items."),
   risks: z
     .array(

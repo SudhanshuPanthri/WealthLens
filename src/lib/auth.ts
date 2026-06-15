@@ -97,6 +97,7 @@ export async function getSessionUser() {
     id: user.id,
     email: user.email,
     name: user.name,
+    avatarUrl: user.avatarUrl,
     portfolioId: user.portfolios[0]?.id ?? null,
   };
 }

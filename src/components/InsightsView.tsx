@@ -115,8 +115,8 @@ export default function InsightsView({
               <Loader2 className="mx-auto h-10 w-10 animate-spin text-accent" />
               <p className="mt-6 font-semibold">Analyzing your portfolio…</p>
               <p className="mt-1 text-sm text-muted">
-                Claude is reviewing concentration, sector tilts, and per-stock risk. This can take
-                up to a minute.
+                Reviewing concentration, sector tilts, and per-stock risk. This can take a few
+                seconds (longer on the free models).
               </p>
             </>
           ) : (

@@ -8,7 +8,7 @@ const JSON_SHAPE = `Return ONLY a JSON object (no markdown, no prose) matching e
 {
   "healthScore": number (0-100),
   "headline": string,
-  "summary": string (2-3 paragraphs),
+  "summary": string (1-2 short paragraphs),
   "strengths": string[] (2-5),
   "risks": [{ "severity": "low"|"medium"|"high", "title": string, "detail": string }] (most severe first),
   "redFlags": string[] (empty if none),
@@ -28,7 +28,15 @@ export async function geminiInsights(metrics: PortfolioMetrics): Promise<{ paylo
 
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: "application/json", temperature: 0.4, maxOutputTokens: 8192 },
+    generationConfig: {
+      responseMimeType: "application/json",
+      temperature: 0.4,
+      maxOutputTokens: 8192,
+      // gemini-2.5-flash runs "thinking" by default, which dominates latency.
+      // The insight is a bounded, schema-driven extraction — disable it for a
+      // large speedup at no real quality cost. (Override via GEMINI_THINKING.)
+      thinkingConfig: { thinkingBudget: Number(process.env.GEMINI_THINKING) || 0 },
+    },
   };
 
   let lastErr = "";
@@ -39,6 +47,7 @@ export async function geminiInsights(metrics: PortfolioMetrics): Promise<{ paylo
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(45000), // bound a hung call (Gemini had no timeout)
       },
     );
     if (!res.ok) {

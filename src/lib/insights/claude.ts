@@ -21,7 +21,12 @@ export async function claudeInsights(metrics: PortfolioMetrics): Promise<{ paylo
         content: `Analyze this portfolio snapshot:\n\n${JSON.stringify(buildSnapshot(metrics))}`,
       },
     ],
-    output_config: { format: zodOutputFormat(InsightSchema) },
+    // Bounded, schema-driven extraction — "medium" effort keeps adaptive thinking
+    // shallow so this returns faster than the default "high". Raise via env if needed.
+    output_config: {
+      format: zodOutputFormat(InsightSchema),
+      effort: (process.env.INSIGHTS_CLAUDE_EFFORT as "low" | "medium" | "high" | "max") || "medium",
+    },
   });
 
   if (response.stop_reason === "refusal" || !response.parsed_output) {
