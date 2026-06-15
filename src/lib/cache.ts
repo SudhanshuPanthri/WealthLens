@@ -42,3 +42,6 @@ export class TTLCache {
 
 // Shared instance for public market data (indices, movers, funds).
 export const marketCache = new TTLCache();
+
+// Live NAV lookups for the user's imported mutual-fund holdings (lib/funds.ts).
+export const fundCache = new TTLCache();

@@ -58,6 +58,7 @@ model Portfolio {
   insights     Insight[]
   watchlist    WatchlistItem[]
   transactions Transaction[]
+  fundHoldings FundHolding[]
 
   @@index([userId])
 }
@@ -81,15 +82,57 @@ model ImportBatch {
   id          String    @id @default(cuid())
   portfolioId String
   portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
-  broker      String // ZERODHA | GROWW | GENERIC
+  broker      String // ZERODHA | GROWW | GENERIC | CAMS | KFINTECH | CSV
   fileName    String
   rowCount    Int
-  kind        String        @default("HOLDINGS") // HOLDINGS | TRANSACTIONS
+  kind        String        @default("HOLDINGS") // HOLDINGS | TRANSACTIONS | FUNDS
   createdAt   DateTime      @default(now())
   holdings    Holding[]
   transactions Transaction[]
+  fundHoldings FundHolding[]
 
   @@index([portfolioId])
+}
+
+// One mutual-fund position, identified by scheme + folio. Brought in via a
+// mutual-fund CSV/Excel or a CAMS/KFintech Consolidated Account Statement (CAS).
+// Valued live against mfapi.in NAV — the first non-stock asset class in the app.
+model FundHolding {
+  id            String       @id @default(cuid())
+  portfolioId   String
+  portfolio     Portfolio    @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  schemeName    String
+  schemeCode    String? // mfapi.in scheme code, resolved once and cached in FundSchemeMap
+  isin          String?
+  amc           String? // fund house, e.g. "Parag Parikh"
+  folio         String?
+  units         Float
+  avgNav        Float // cost basis per unit (cost value / units)
+  costValue     Float? // total invested, when the source provides it directly
+  source        String       @default("CSV") // CAMS | KFINTECH | CSV
+  // (portfolioId, dedupeKey) is the upsert key. dedupeKey = isin|folio when an
+  // ISIN is known, else a normalized scheme name + folio — so a re-imported CAS
+  // updates positions instead of duplicating them.
+  dedupeKey     String
+  importBatchId String?
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([portfolioId, dedupeKey])
+  @@index([portfolioId])
+}
+
+// ISIN/name -> mfapi.in scheme resolution, cached permanently (like SymbolMap
+// for stocks). Mutual-fund statements identify schemes by name/ISIN, not by the
+// numeric scheme code mfapi.in needs for NAV lookups.
+model FundSchemeMap {
+  key        String   @id // "isin:INF..." (preferred) or "name:<normalized>"
+  schemeCode String
+  schemeName String
+  isin       String?
+  category   String?
+  updatedAt  DateTime @updatedAt
 }
 
 // A single executed trade (buy or sell). The transaction ledger powers realized

@@ -3,6 +3,7 @@ import { Upload } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { computeMetrics } from "@/lib/metrics";
+import { computeFundMetrics } from "@/lib/funds";
 import DashboardView from "@/components/DashboardView";
 
 export const metadata = { title: "Dashboard — WealthLens" };
@@ -11,19 +12,19 @@ export default async function DashboardPage() {
   const user = await getSessionUser();
   if (!user?.portfolioId) return null; // layout already redirects
 
-  const holdings = await prisma.holding.findMany({
-    where: { portfolioId: user.portfolioId },
-    orderBy: { symbol: "asc" },
-  });
+  const [holdings, fundHoldings] = await Promise.all([
+    prisma.holding.findMany({ where: { portfolioId: user.portfolioId }, orderBy: { symbol: "asc" } }),
+    prisma.fundHolding.findMany({ where: { portfolioId: user.portfolioId } }),
+  ]);
 
-  if (holdings.length === 0) {
+  if (holdings.length === 0 && fundHoldings.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface px-6 py-24 text-center">
         <Upload className="h-10 w-10 text-muted" />
         <h1 className="mt-6 text-2xl font-bold">Your portfolio is empty</h1>
         <p className="mt-2 max-w-md text-muted">
-          Import a holdings export from Zerodha, Groww, or any broker to see your unified
-          dashboard and AI insights.
+          Import a holdings export from Zerodha, Groww, or any broker — or a mutual-fund CAS —
+          to see your unified dashboard and AI insights.
         </p>
         <Link
           href="/import"
@@ -37,6 +38,9 @@ export default async function DashboardPage() {
 
   // Initial server-rendered metrics for instant first paint; the client view
   // then polls /api/portfolio to keep prices live.
-  const metrics = await computeMetrics(holdings);
-  return <DashboardView initialMetrics={metrics} />;
+  const [metrics, funds] = await Promise.all([
+    holdings.length > 0 ? computeMetrics(holdings) : Promise.resolve(null),
+    fundHoldings.length > 0 ? computeFundMetrics(fundHoldings) : Promise.resolve(null),
+  ]);
+  return <DashboardView initialMetrics={metrics} initialFunds={funds} />;
 }
