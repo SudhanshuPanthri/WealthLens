@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Light theme (warm paper) */
+:root {
+  --bg: #f8f7f4;
+  --surface: #ffffff;
+  --surface-2: #f1efe9;
+  --border: #e4e1d8;
+  --fg: #1a1812;
+  --muted: #6b6657;
+  --accent: #d97706;
+  --accent-strong: #b45309;
+  --accent-soft: #fef3c7;
+  --success: #15803d;
+  --success-soft: #dcfce7;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --warn: #a16207;
+  --warn-soft: #fef9c3;
+  --glow: rgba(217, 119, 6, 0.18);
+}
+
+/* Dark theme (deep navy) */
+.dark {
+  --bg: #0b0e14;
+  --surface: #11151f;
+  --surface-2: #181d2a;
+  --border: #232a3b;
+  --fg: #eef1f8;
+  --muted: #8b93a7;
+  --accent: #f59e0b;
+  --accent-strong: #fbbf24;
+  --accent-soft: rgba(245, 158, 11, 0.12);
+  --success: #4ade80;
+  --success-soft: rgba(74, 222, 128, 0.12);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.12);
+  --warn: #facc15;
+  --warn-soft: rgba(250, 204, 21, 0.12);
+  --glow: rgba(245, 158, 11, 0.14);
+}
+
+@theme inline {
+  /* Canonical token names (match challan-check) */
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+
+  /* Aliases so existing WealthLens classes keep working */
+  --color-border: var(--border);
+  --color-ink: var(--fg);
+  --color-accent-dim: var(--accent-strong);
+  --color-gain: var(--success);
+  --color-loss: var(--danger);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Ambient hero glow */
+.hero-glow {
+  background:
+    radial-gradient(600px 320px at 20% 0%, var(--glow), transparent 70%),
+    radial-gradient(500px 280px at 85% 10%, var(--glow), transparent 70%);
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+::selection {
+  background: var(--accent);
+  color: #0b0e14;
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; color: #000; }
+}

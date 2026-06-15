@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// SQLite for local dev. To move to Postgres in production, change provider
+// to "postgresql" and set DATABASE_URL accordingly — the schema is portable.
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String         @id @default(cuid())
+  email        String         @unique
+  name         String
+  // null for accounts created purely via an OAuth provider (no password set)
+  passwordHash String?
+  avatarUrl    String?
+  createdAt    DateTime       @default(now())
+  sessions     Session[]
+  portfolios   Portfolio[]
+  oauthAccounts OAuthAccount[]
+}
+
+// Links a User to an external identity provider (Google, etc.). A user may
+// have several — one per provider — all resolving to the same account.
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider          String // "google" | ...
+  providerAccountId String // the provider's stable user id (sub)
+  createdAt         DateTime @default(now())
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Portfolio {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String        @default("My Portfolio")
+  createdAt DateTime      @default(now())
+  holdings     Holding[]
+  imports      ImportBatch[]
+  insights     Insight[]
+  watchlist    WatchlistItem[]
+  transactions Transaction[]
+
+  @@index([userId])
+}
+
+// A stock the user is tracking but doesn't (necessarily) own. Keyed unique on
+// (portfolioId, symbol, exchange) so the same ticker can't be added twice.
+model WatchlistItem {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  symbol      String // NSE/BSE trading symbol, e.g. RELIANCE
+  exchange    String    @default("NSE") // NSE | BSE
+  name        String?
+  createdAt   DateTime  @default(now())
+
+  @@unique([portfolioId, symbol, exchange])
+  @@index([portfolioId])
+}
+
+model ImportBatch {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  broker      String // ZERODHA | GROWW | GENERIC
+  fileName    String
+  rowCount    Int
+  kind        String        @default("HOLDINGS") // HOLDINGS | TRANSACTIONS
+  createdAt   DateTime      @default(now())
+  holdings    Holding[]
+  transactions Transaction[]
+
+  @@index([portfolioId])
+}
+
+// A single executed trade (buy or sell). The transaction ledger powers realized
+// P&L (FIFO), XIRR, and the invested-over-time chart — separate from the
+// current-holdings view, which can be imported independently.
+model Transaction {
+  id            String       @id @default(cuid())
+  portfolioId   String
+  portfolio     Portfolio    @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  symbol        String // NSE/BSE trading symbol
+  exchange      String       @default("NSE")
+  isin          String?
+  name          String?
+  type          String // BUY | SELL
+  quantity      Float
+  price         Float // per-share INR
+  fees          Float        @default(0) // brokerage + taxes, if known
+  tradedAt      DateTime
+  broker        String
+  importBatchId String?
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+
+  @@index([portfolioId, tradedAt])
+}
+
+model Holding {
+  id            String       @id @default(cuid())
+  portfolioId   String
+  portfolio     Portfolio    @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  symbol        String // NSE/BSE trading symbol, e.g. RELIANCE
+  exchange      String       @default("NSE") // NSE | BSE
+  isin          String?
+  name          String?
+  quantity      Float
+  avgPrice      Float // average buy price per share (INR)
+  broker        String // ZERODHA | GROWW | GENERIC
+  importBatchId String?
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // The same stock held at two brokers stays as two rows (broker-tagged);
+  // re-importing from the same broker upserts instead of duplicating.
+  @@unique([portfolioId, symbol, broker])
+  @@index([portfolioId])
+}
+
+model QuoteCache {
+  symbol     String   @id // yahoo symbol, e.g. RELIANCE.NS
+  price      Float
+  prevClose  Float?
+  dayChange  Float? // percent
+  name       String?
+  sector     String?
+  industry   String?
+  marketCap  Float?
+  high52     Float?
+  low52      Float?
+  trailingPE Float?
+  updatedAt  DateTime @updatedAt
+}
+
+// Groww exports identify stocks by ISIN + name only; this caches the
+// resolved NSE/BSE trading symbol so we resolve each ISIN once.
+model SymbolMap {
+  isin      String   @id
+  symbol    String
+  exchange  String   @default("NSE")
+  name      String?
+  updatedAt DateTime @updatedAt
+}
+
+model Insight {
+  id           String    @id @default(cuid())
+  portfolioId  String
+  portfolio    Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  snapshotHash String // hash of holdings+quotes the insight was generated from
+  model        String
+  engine       String    @default("rule-based") // rule-based | gemini | claude
+  content      String // JSON payload of the structured insight
+  createdAt    DateTime  @default(now())
+
+  @@index([portfolioId, createdAt])
+}
