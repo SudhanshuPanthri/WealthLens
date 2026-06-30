@@ -11,7 +11,7 @@ export default async function LandingPage() {
 
   return (
     <main className="relative mx-auto flex min-h-screen max-w-6xl flex-col px-6">
-      <div className="hero-glow pointer-events-none absolute inset-x-0 top-0 -z-10 h-[480px]" />
+      <div className="hero-glow pointer-events-none absolute left-1/2 top-0 -z-10 h-[480px] w-screen -translate-x-1/2" />
       <header className="flex items-center justify-between py-6">
         <div className="flex items-center gap-2 text-lg font-bold tracking-tight">
           <TrendingUp className="h-5 w-5 text-accent" />
