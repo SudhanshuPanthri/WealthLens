@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers, Coins } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
 import UserMenu from "@/components/UserMenu";
 
 const LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/analytics", label: "Analytics", icon: Layers },
+  { href: "/dividends", label: "Dividends", icon: Coins },
   { href: "/watchlist", label: "Watchlist", icon: Star },
   { href: "/transactions", label: "Transactions", icon: Receipt },
   { href: "/tax", label: "Tax", icon: Landmark },

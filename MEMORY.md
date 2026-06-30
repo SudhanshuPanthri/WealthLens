@@ -191,7 +191,24 @@ Ranked product differentiators. Done: **Tax intelligence** (Phase 10),
 tax-harvest plan/funds/reminder** (Phase 14).
 
 User-chosen feature queue (2026-06-30): **Tax-Loss Harvesting** ✅ (Phase 14) →
-**Dividend Income Tracker** (next) → **MF Fee/Expense Leakage** → **Portfolio Overlap X-ray**.
+**Dividend Income Tracker** ✅ (Phase 15) → **MF Fee/Expense Leakage** (next) →
+**Portfolio Overlap X-ray**.
+
+### Phase 15 — Dividend Income Tracker (most recent work)
+- `lib/dividends.ts` `computeDividends(holdings)` — projected annual income (Yahoo
+  `trailingAnnualDividendRate` × qty, merged across brokers), blended portfolio yield,
+  payer count, and an ex-date calendar. Yahoo returns the *last* ex-date for Indian
+  stocks, so `nextOccurrence()` rolls each forward by whole years to the next date and
+  flags it `estimated` (no reliable free upcoming-ex-date source). 12h in-memory cache
+  (`dividendCache`). Equity growth MFs don't distribute → stocks only.
+- **Non-blocking UX pattern** (addresses slow tab-switches): `/dividends` page server-
+  renders only a cheap `holding.count` + shell; `DividendsView` (client) fetches
+  `/api/dividends` and shows a skeleton, so the tab paints instantly. Other heavy pages
+  (tax/analytics) still block server-side on first nav — convert them to this pattern if
+  the lag is annoying. Nav gained a "Dividends" link (Coins icon).
+- Verified live: seeded ITC/COALINDIA/TCS/RELIANCE → income ₹6,310/yr, yield 4.28%,
+  calendar forward-rolled to 2027 (est). `tsc` clean; test user cleaned up.
+
 Remaining build order:
 
 1. **Mutual-fund look-through overlap** — "your real RELIANCE exposure across direct
