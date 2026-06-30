@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers, Coins, Wallet } from "lucide-react";
-import ThemeToggle from "@/components/ThemeToggle";
 import UserMenu from "@/components/UserMenu";
 
 const LINKS = [
@@ -55,8 +54,7 @@ export default function Nav({
             })}
           </nav>
         </div>
-        <div className="flex items-center gap-3">
-          <ThemeToggle />
+        <div className="flex shrink-0 items-center gap-3">
           <UserMenu name={userName} email={userEmail} avatarUrl={userAvatar} />
         </div>
       </div>

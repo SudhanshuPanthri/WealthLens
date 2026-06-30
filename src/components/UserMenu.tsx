@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { LogOut, Moon, Sun } from "lucide-react";
 
 /** "Sudhanshu Panthri" → "SP", "Alice" → "AL". */
 function initials(name: string): string {
@@ -28,8 +28,24 @@ export default function UserMenu({
   avatarUrl?: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  const [dark, setDark] = useState<boolean | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const router = useRouter();
+
+  useEffect(() => {
+    setDark(document.documentElement.classList.contains("dark"));
+  }, []);
+
+  function toggleTheme() {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle("dark", next);
+    try {
+      localStorage.setItem("theme", next ? "dark" : "light");
+    } catch {
+      // private browsing — theme just won't persist
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -88,6 +104,23 @@ export default function UserMenu({
               <p className="truncate text-xs text-muted">{email}</p>
             </div>
           </div>
+          <button
+            onClick={toggleTheme}
+            role="menuitem"
+            className="flex w-full items-center justify-between gap-2 border-b border-border px-4 py-2.5 text-left text-sm text-muted hover:bg-surface-2 hover:text-ink"
+          >
+            <span className="flex items-center gap-2">
+              {dark === null ? (
+                <span className="h-4 w-4" />
+              ) : dark ? (
+                <Moon className="h-4 w-4" />
+              ) : (
+                <Sun className="h-4 w-4" />
+              )}
+              {dark === null ? "Theme" : dark ? "Dark mode" : "Light mode"}
+            </span>
+            <span className="text-xs text-muted">{dark === null ? "" : dark ? "Switch to light" : "Switch to dark"}</span>
+          </button>
           <button
             onClick={logout}
             role="menuitem"
