@@ -13,10 +13,13 @@ export async function GET(req: NextRequest) {
   const fyParam = req.nextUrl.searchParams.get("fy") ?? undefined;
   const fy = fyParam && /^\d{4}-\d{2}$/.test(fyParam) ? fyParam : undefined;
 
-  const transactions = await prisma.transaction.findMany({
-    where: { portfolioId: user.portfolioId },
-    orderBy: { tradedAt: "asc" },
-  });
-  const summary = await computeTax(transactions, fy);
+  const [transactions, funds] = await Promise.all([
+    prisma.transaction.findMany({
+      where: { portfolioId: user.portfolioId },
+      orderBy: { tradedAt: "asc" },
+    }),
+    prisma.fundHolding.findMany({ where: { portfolioId: user.portfolioId } }),
+  ]);
+  const summary = await computeTax(transactions, fy, undefined, funds);
   return NextResponse.json({ summary });
 }

@@ -21,6 +21,8 @@ model User {
   // null for accounts created purely via an OAuth provider (no password set)
   passwordHash String?
   avatarUrl    String?
+  // opt-in: email a tax-loss-harvesting reminder as the 31-Mar deadline nears
+  harvestReminderOptIn Boolean @default(false)
   createdAt    DateTime       @default(now())
   sessions     Session[]
   portfolios   Portfolio[]

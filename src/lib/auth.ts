@@ -98,6 +98,7 @@ export async function getSessionUser() {
     email: user.email,
     name: user.name,
     avatarUrl: user.avatarUrl,
+    harvestReminderOptIn: user.harvestReminderOptIn,
     portfolioId: user.portfolios[0]?.id ?? null,
   };
 }

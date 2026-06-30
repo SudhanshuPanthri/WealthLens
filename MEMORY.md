@@ -147,13 +147,52 @@ Everything below is implemented, `tsc --noEmit` clean, and smoke-tested live.
   2000 + bf LTCL 2000, net 3000/1000, tax ₹600). Gains-only FYs unchanged (net=gross),
   so the earlier ₹68.24 verification still holds. `tsc` clean.
 
+### Phase 14 — Vercel deploy + auth/UX + tax-harvest plan (most recent work)
+- **Postgres/Neon + Vercel** — datasource switched SQLite→`postgresql` (pooled `url` +
+  `directUrl` for migrations), `binaryTargets += rhel-openssl-3.0.x`, build runs
+  `prisma generate && migrate deploy && next build`. Deployed at
+  `https://wealth-lens-one.vercel.app`. See `DEPLOY.md`. Local `.env` now also needs Neon URLs.
+- **Email infra** (`lib/email.ts`) — Resend HTTP API when `RESEND_API_KEY` set, else logs
+  to console (dev). `EMAIL_FROM` needs a Resend-verified domain in prod (the user is buying
+  one; `*.vercel.app` can't be verified — no DNS control).
+- **Email-OTP password reset** — `/forgot-password` 3-step flow + `/api/auth/password/{request,verify,reset}`.
+  6-digit code bcrypt-hashed at rest, exchanged for a random token on verify (code never re-sent),
+  single-use, 10-min TTL, 5-attempt cap, per-email+IP rate-limited, no account enumeration,
+  all sessions revoked on reset. New `PasswordReset` model. `AuthForm` gained a "Forgot password?" link.
+- **Custom password reveal toggle** (`AuthForm`, `ImportFlow`, reset form) — Edge's native
+  `::-ms-reveal` is invisible on dark theme; hidden globally, replaced with an Eye/EyeOff button.
+- **Landing-page motion** — `Reveal` (IntersectionObserver scroll-in), animated gradient headline,
+  breathing hero glow (now full-bleed `w-screen`), button micro-interactions; all gated behind
+  `prefers-reduced-motion`. Body got `overflow-x-hidden`.
+- **Tax-loss-harvesting upgrade** (`lib/tax.ts`):
+  - **Harvest Plan optimizer** (`buildHarvestPlan`) — greedy lot selection to neutralize the FY's
+    realized taxable gains: STCL→STCG (20%) then →LTCG (12.5%), LTCL→LTCG only; only LTCG *above*
+    the ₹1.25L exemption is worth offsetting. Returns items + before/after tax + carry-forward created.
+    Built only for the current FY (`summary.harvest.plan`); `summary.deadline` adds the 31-Mar countdown.
+  - **Equity mutual funds included** — `computeTax` now takes `funds: FundHolding[]`, values them via
+    `computeFundMetrics`, and adds equity-fund losers (category `/equity/i`) to candidates + the plan.
+    No per-lot buy dates for funds → term **assumed long-term** (conservative; LTCL only). `kind: stock|fund`.
+  - **Deadline + reminder** — `User.harvestReminderOptIn` + `/api/settings/harvest-reminder` toggle +
+    `/api/cron/harvest-reminder` (CRON_SECRET, self-guards: only within 90d of deadline & ≥₹1k saving;
+    `sendHarvestReminder` email). `TaxView` shows the plan card, deadline banner w/ opt-in checkbox,
+    MF tags, and a link to the official ITR e-filing portal (`incometax.gov.in`).
+- Verified: live seed (STCG ₹1k + LTCG ₹2L + RELIANCE STCL loser + PPFC equity-fund LTCL loser) →
+  plan saved ₹6,082 (tax ₹9,575→₹3,493), fund in plan, `fundTermAssumed` true; cron correctly
+  *skipped* sending (275d > 90d window); OTP reset flow end-to-end (wrong code, token reuse, session
+  revoke all pass). `tsc` clean; test users cleaned up.
+
 ---
 
 ## 3. Discussed but NOT yet built (the roadmap)
 
 Ranked product differentiators. Done: **Tax intelligence** (Phase 10),
 **Cross-broker analytics** (Phase 11), **Mutual funds + CAS/MF import** (Phase 12),
-**Deepen tax — loss set-off & carry-forward** (Phase 13). Remaining build order:
+**Deepen tax — loss set-off & carry-forward** (Phase 13), **Vercel deploy + auth/UX +
+tax-harvest plan/funds/reminder** (Phase 14).
+
+User-chosen feature queue (2026-06-30): **Tax-Loss Harvesting** ✅ (Phase 14) →
+**Dividend Income Tracker** (next) → **MF Fee/Expense Leakage** → **Portfolio Overlap X-ray**.
+Remaining build order:
 
 1. **Mutual-fund look-through overlap** — "your real RELIANCE exposure across direct
    + 3 funds is 11%." **Now half-unblocked:** fund holdings exist (Phase 12), so only

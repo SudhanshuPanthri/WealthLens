@@ -68,6 +68,19 @@ just pre-warms the cache.
   `https://<app>.vercel.app/api/cron/refresh?secret=<CRON_SECRET>` every ~10 min
   during market hours.
 
+## 6. (Optional) Tax-loss-harvesting reminder email
+
+Emails users who opted in (tax page → "Email me a reminder") when they have a
+worthwhile harvest before the 31-Mar deadline. Needs `RESEND_API_KEY` (see §
+email) and `CRON_SECRET`. The route self-guards (only sends within 90 days of
+the deadline and above ₹1,000 estimated saving), so a daily schedule is safe.
+
+- **Vercel Pro:** add to `vercel.json` crons:
+  `{ "path": "/api/cron/harvest-reminder", "schedule": "0 9 * * *" }`.
+- **Any plan:** point a scheduler at
+  `https://<app>.vercel.app/api/cron/harvest-reminder?secret=<CRON_SECRET>` once
+  a day (most useful Jan–Mar).
+
 ## Notes
 
 - The Prisma generator includes the `rhel-openssl-3.0.x` binary target Vercel needs.

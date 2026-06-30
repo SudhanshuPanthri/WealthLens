@@ -2,14 +2,36 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { TrendingDown, Gift, Hourglass, Info, Receipt, Layers } from "lucide-react";
-import type { TaxSummary, HarvestCandidate } from "@/lib/tax";
+import { TrendingDown, Gift, Hourglass, Info, Receipt, Layers, CalendarClock, Scissors, ArrowRight, ExternalLink } from "lucide-react";
+import type { TaxSummary, HarvestCandidate, HarvestPlan } from "@/lib/tax";
 import { formatINR, formatPct, pnlClass } from "@/lib/format";
 
-export default function TaxView({ initial }: { initial: TaxSummary }) {
+// Official Income Tax e-filing portal.
+const ITR_PORTAL = "https://www.incometax.gov.in/iec/foportal/";
+
+export default function TaxView({ initial, reminderOptIn }: { initial: TaxSummary; reminderOptIn: boolean }) {
   const [summary, setSummary] = useState(initial);
   const [fy, setFy] = useState(initial.fy);
   const [loading, setLoading] = useState(false);
+  const [optIn, setOptIn] = useState(reminderOptIn);
+  const [optInSaving, setOptInSaving] = useState(false);
+
+  async function toggleReminder(next: boolean) {
+    setOptIn(next); // optimistic
+    setOptInSaving(true);
+    try {
+      const res = await fetch("/api/settings/harvest-reminder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ optIn: next }),
+      });
+      if (!res.ok) setOptIn(!next); // revert on failure
+    } catch {
+      setOptIn(!next);
+    } finally {
+      setOptInSaving(false);
+    }
+  }
 
   async function load(targetFy: string) {
     setLoading(true);
@@ -65,6 +87,17 @@ export default function TaxView({ initial }: { initial: TaxSummary }) {
         </label>
       </div>
 
+      {/* Deadline + reminder opt-in (current FY only) */}
+      {summary.deadline.isCurrentFy && (
+        <DeadlineBanner
+          daysLeft={summary.deadline.daysLeft}
+          fyEnd={summary.deadline.fyEnd}
+          optIn={optIn}
+          optInSaving={optInSaving}
+          onToggle={toggleReminder}
+        />
+      )}
+
       {/* Realized gains + estimated tax */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card label="Short-term gain" hint="Held ≤ 12 months">
@@ -92,6 +125,9 @@ export default function TaxView({ initial }: { initial: TaxSummary }) {
           </span>
         </Card>
       </div>
+
+      {/* Year-end harvest plan — the headline action */}
+      {h.plan && <HarvestPlanCard plan={h.plan} hasLosers={h.lossCandidates.length > 0} />}
 
       {/* LTCG allowance meter */}
       <div className="rounded-2xl border border-border bg-surface p-5">
@@ -281,6 +317,20 @@ export default function TaxView({ initial }: { initial: TaxSummary }) {
         </p>
       ))}
 
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface-2 px-4 py-3">
+        <p className="text-sm">
+          Ready to file? Capital gains are reported in your <span className="font-medium">ITR-2 / ITR-3</span>.
+        </p>
+        <a
+          href={ITR_PORTAL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg transition-transform duration-200 hover:scale-[1.03] active:scale-95"
+        >
+          File on the Income Tax portal <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      </div>
+
       <p className="flex items-start gap-2 text-xs text-muted">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         Estimates for listed equity / equity funds (STT-paid) under the post-Jul-2024 regime: STCG{" "}
@@ -320,6 +370,139 @@ function Card({ label, hint, children }: { label: string; hint?: string; childre
   );
 }
 
+function DeadlineBanner({
+  daysLeft,
+  fyEnd,
+  optIn,
+  optInSaving,
+  onToggle,
+}: {
+  daysLeft: number;
+  fyEnd: string;
+  optIn: boolean;
+  optInSaving: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  const urgent = daysLeft <= 60;
+  return (
+    <div
+      className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-4 ${
+        urgent ? "border-accent/40 bg-accent-soft" : "border-border bg-surface"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <CalendarClock className={`h-5 w-5 shrink-0 ${urgent ? "text-accent" : "text-muted"}`} />
+        <p className="text-sm">
+          <span className="font-semibold">{daysLeft} day{daysLeft === 1 ? "" : "s"}</span> to the {fyEnd} tax
+          deadline.{" "}
+          {urgent
+            ? "Harvest losses before then to cut this year's tax."
+            : "Plenty of time to plan your harvest."}
+        </p>
+      </div>
+      <label className="flex cursor-pointer items-center gap-2 text-sm text-muted">
+        <input
+          type="checkbox"
+          checked={optIn}
+          disabled={optInSaving}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="h-4 w-4 rounded border-border accent-accent"
+        />
+        Email me a reminder
+      </label>
+    </div>
+  );
+}
+
+function HarvestPlanCard({ plan, hasLosers }: { plan: HarvestPlan; hasLosers: boolean }) {
+  if (plan.items.length === 0 || plan.taxSaved <= 0) {
+    return (
+      <div className="rounded-2xl border border-border bg-surface p-5">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <Scissors className="h-4 w-4 text-accent" /> Year-end harvest plan
+        </h2>
+        <p className="mt-2 text-sm text-muted">
+          {hasLosers
+            ? "You have loss-making positions, but no realized gains this year to offset. Selling them now still books losses that carry forward up to 8 years."
+            : "No loss-making positions to harvest right now — we'll build a plan here when one appears."}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-2xl border border-accent/30 bg-surface p-5">
+      <h2 className="flex items-center gap-2 text-sm font-semibold">
+        <Scissors className="h-4 w-4 text-accent" /> Year-end harvest plan
+      </h2>
+      <p className="mt-2 text-sm text-muted">
+        Sell {plan.items.length === 1 ? "this position" : `these ${plan.items.length} positions`} to offset{" "}
+        <span className="font-semibold text-ink">{formatINR(plan.gainsOffset)}</span> of realized gains and save about{" "}
+        <span className="font-semibold text-gain">{formatINR(plan.taxSaved)}</span> in tax.
+      </p>
+
+      <div className="mt-4 flex items-center gap-3 text-sm">
+        <div className="rounded-xl border border-border bg-surface-2 px-4 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted">Tax now</p>
+          <p className="font-mono text-lg font-semibold">{formatINR(plan.taxBefore)}</p>
+        </div>
+        <ArrowRight className="h-4 w-4 shrink-0 text-muted" />
+        <div className="rounded-xl border border-accent/30 bg-accent-soft px-4 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted">After plan</p>
+          <p className="font-mono text-lg font-semibold text-gain">{formatINR(plan.taxAfter)}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
+              <th className="py-2 pr-3 font-medium">Sell</th>
+              <th className="px-3 py-2 text-right font-medium">Loss booked</th>
+              <th className="px-3 py-2 text-center font-medium">Offsets</th>
+              <th className="py-2 pl-3 text-right font-medium">Tax saved</th>
+            </tr>
+          </thead>
+          <tbody>
+            {plan.items.map((it, i) => (
+              <tr key={i} className="border-b border-border/50 last:border-0">
+                <td className="py-2 pr-3 font-medium">
+                  <span className="truncate">{it.symbol}</span>
+                  {it.kind === "fund" ? (
+                    <span className="ml-1.5 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">MF</span>
+                  ) : (
+                    <span className="ml-1.5 text-xs text-muted">×{it.quantity}</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-loss">−{formatINR(it.loss)}</td>
+                <td className="px-3 py-2 text-center text-xs text-muted">
+                  {it.appliedToStcg > 0 && <span>{formatINR(it.appliedToStcg)} STCG</span>}
+                  {it.appliedToStcg > 0 && it.appliedToLtcg > 0 && " · "}
+                  {it.appliedToLtcg > 0 && <span>{formatINR(it.appliedToLtcg)} LTCG</span>}
+                </td>
+                <td className="py-2 pl-3 text-right font-mono text-gain">{formatINR(it.taxSaved)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {plan.carryForwardCreated > 0 && (
+        <p className="mt-3 text-xs text-muted">
+          Plus <span className="font-medium text-ink">{formatINR(plan.carryForwardCreated)}</span> of extra losses
+          carried forward to future years.
+        </p>
+      )}
+      <p className="mt-3 flex items-start gap-2 rounded-xl bg-surface-2 px-3 py-2 text-xs text-muted">
+        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        India has no &ldquo;wash-sale&rdquo; rule — you can rebuy the same position immediately to keep your exposure
+        while still booking the loss.
+        {plan.fundTermAssumed &&
+          " Mutual-fund holding periods aren't in the imported data, so funds are treated as long-term (conservative)."}
+      </p>
+    </div>
+  );
+}
+
 function HarvestPanel({
   icon,
   title,
@@ -346,13 +529,20 @@ function HarvestPanel({
           <ul className="mt-3 space-y-1.5">
             {candidates.slice(0, 6).map((c) => (
               <li key={`${c.symbol}-${c.exchange}`} className="flex items-center justify-between gap-2">
-                <Link
-                  href={`/stock/${c.symbol}?exchange=${c.exchange}`}
-                  className="truncate text-sm font-medium hover:text-accent"
-                >
-                  {c.symbol}
-                  <span className="ml-1.5 text-xs text-muted">×{c.quantity}</span>
-                </Link>
+                {c.kind === "fund" ? (
+                  <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+                    <span className="truncate">{c.symbol}</span>
+                    <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">MF</span>
+                  </span>
+                ) : (
+                  <Link
+                    href={`/stock/${c.symbol}?exchange=${c.exchange}`}
+                    className="truncate text-sm font-medium hover:text-accent"
+                  >
+                    {c.symbol}
+                    <span className="ml-1.5 text-xs text-muted">×{c.quantity}</span>
+                  </Link>
+                )}
                 {renderRight(c)}
               </li>
             ))}

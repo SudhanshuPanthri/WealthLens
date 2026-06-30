@@ -1,5 +1,6 @@
-import type { Transaction } from "@prisma/client";
+import type { Transaction, FundHolding } from "@prisma/client";
 import { getQuotes, toYahooSymbol } from "./quotes";
+import { computeFundMetrics } from "./funds";
 
 /**
  * Capital-gains tax intelligence for listed Indian equity / equity ETFs &
@@ -80,6 +81,32 @@ export interface HarvestCandidate {
   term: Term;
   estTaxImpact: number; // tax saved (loss) or tax-free gain bookable (ltcg)
   daysToLtcg?: number;
+  kind?: "stock" | "fund"; // funds: equity MF positions; default stock
+}
+
+/** One position to sell in the year-end harvest plan, with how its loss is applied. */
+export interface HarvestPlanItem {
+  symbol: string; // ticker (stocks) or scheme name (funds)
+  exchange: string; // NSE/BSE, or "MF" for funds
+  kind: "stock" | "fund";
+  quantity: number;
+  loss: number; // total loss booked if the whole position is sold (positive)
+  term: Term;
+  appliedToStcg: number; // portion of the loss that cancels short-term gains
+  appliedToLtcg: number; // portion that cancels long-term gains
+  taxSaved: number; // appliedToStcg*stcgRate + appliedToLtcg*ltcgRate
+}
+
+/** An optimized set of positions to sell before the FY-end to cut this year's tax. */
+export interface HarvestPlan {
+  items: HarvestPlanItem[];
+  lossBooked: number; // total loss realized by selling the listed positions
+  gainsOffset: number; // taxable gains actually cancelled
+  taxBefore: number; // estimated tax for the FY as things stand
+  taxAfter: number; // estimated tax after executing the plan
+  taxSaved: number; // taxBefore − taxAfter
+  carryForwardCreated: number; // booked loss beyond this year's gains (carries forward)
+  fundTermAssumed: boolean; // a fund's holding period was unknown and assumed long-term
 }
 
 export interface TaxSummary {
@@ -109,7 +136,9 @@ export interface TaxSummary {
     estLossTaxSaved: number;
     ltcgFreeCandidates: HarvestCandidate[]; // book LTCG into the remaining allowance
     countdown: HarvestCandidate[]; // STCG-with-gain positions nearing the LTCG line
+    plan: HarvestPlan | null; // optimized year-end sell plan (current FY only)
   };
+  deadline: { fyEnd: string; daysLeft: number; isCurrentFy: boolean }; // 31-Mar deadline for the target FY
   rules: typeof TAX_RULES;
   warnings: string[];
   asOf: string;
@@ -256,6 +285,81 @@ interface DatedLot {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
+ * Greedy year-end harvest plan: pick which loss-making positions to sell to
+ * cancel the most tax on this year's realized gains. Short-term losses are
+ * applied first (they kill 20% STCG, then 12.5% LTCG), then long-term losses
+ * (LTCG only). Only LTCG above the ₹1.25L exemption is worth offsetting — the
+ * part below it is already tax-free. Whole positions are taken (you sell the
+ * lot), so booked loss beyond the gains simply carries forward.
+ */
+function buildHarvestPlan(
+  losers: HarvestCandidate[],
+  netStcg: number,
+  netLtcg: number,
+  taxBefore: number,
+): HarvestPlan {
+  let needStcg = Math.max(0, netStcg);
+  let needLtcg = Math.max(0, netLtcg - TAX_RULES.ltcgExemption);
+
+  const shortTerm = losers.filter((l) => l.term === "STCG").sort((a, b) => b.amount - a.amount);
+  const longTerm = losers.filter((l) => l.term === "LTCG").sort((a, b) => b.amount - a.amount);
+  const items: HarvestPlanItem[] = [];
+
+  // Short-term losses: cancel STCG first (higher rate), then spill onto LTCG.
+  for (const l of shortTerm) {
+    if (needStcg <= 0 && needLtcg <= 0) break;
+    const aS = Math.min(l.amount, needStcg);
+    const aL = Math.min(l.amount - aS, needLtcg);
+    if (aS <= 0 && aL <= 0) continue;
+    needStcg -= aS;
+    needLtcg -= aL;
+    items.push({
+      symbol: l.symbol,
+      exchange: l.exchange,
+      kind: l.kind ?? "stock",
+      quantity: l.quantity,
+      loss: l.amount,
+      term: l.term,
+      appliedToStcg: round2(aS),
+      appliedToLtcg: round2(aL),
+      taxSaved: round2(aS * TAX_RULES.stcgRate + aL * TAX_RULES.ltcgRate),
+    });
+  }
+  // Long-term losses: LTCG only.
+  for (const l of longTerm) {
+    if (needLtcg <= 0) break;
+    const aL = Math.min(l.amount, needLtcg);
+    if (aL <= 0) continue;
+    needLtcg -= aL;
+    items.push({
+      symbol: l.symbol,
+      exchange: l.exchange,
+      kind: l.kind ?? "stock",
+      quantity: l.quantity,
+      loss: l.amount,
+      term: l.term,
+      appliedToStcg: 0,
+      appliedToLtcg: round2(aL),
+      taxSaved: round2(aL * TAX_RULES.ltcgRate),
+    });
+  }
+
+  const lossBooked = round2(items.reduce((s, i) => s + i.loss, 0));
+  const gainsOffset = round2(items.reduce((s, i) => s + i.appliedToStcg + i.appliedToLtcg, 0));
+  const taxSaved = round2(items.reduce((s, i) => s + i.taxSaved, 0));
+  return {
+    items,
+    lossBooked,
+    gainsOffset,
+    taxBefore: round2(taxBefore),
+    taxAfter: round2(Math.max(0, taxBefore - taxSaved)),
+    taxSaved,
+    carryForwardCreated: round2(Math.max(0, lossBooked - gainsOffset)),
+    fundTermAssumed: items.some((i) => i.kind === "fund"),
+  };
+}
+
+/**
  * Compute the full tax picture for a target FY (defaults to the FY containing
  * `asOf`). FIFO-matches sells against buys, dating each matched chunk so we can
  * classify STCG vs LTCG, then values still-open lots at live prices.
@@ -264,6 +368,7 @@ export async function computeTax(
   transactions: Transaction[],
   fy?: string,
   asOf: Date = new Date(),
+  funds: FundHolding[] = [],
 ): Promise<TaxSummary> {
   const targetFy = fy ?? fyOf(asOf);
   const { start, end } = fyBounds(targetFy);
@@ -389,11 +494,37 @@ export async function computeTax(
   }
   taxLots.sort((a, b) => (a.unrealized ?? 0) - (b.unrealized ?? 0)); // biggest losses first
 
+  // ---- Equity mutual-fund losers ------------------------------------------
+  // Equity MFs are STT-paid and follow the same STCG/LTCG rules as stocks, so
+  // their unrealized losses are harvestable too. We don't store per-lot buy
+  // dates for funds, so the holding period is unknown — we assume long-term
+  // (the conservative choice: LTCL offsets only LTCG, never overstating relief).
+  let fundTermAssumed = false;
+  const fundLosers: HarvestCandidate[] = [];
+  if (funds.length > 0) {
+    const fm = await computeFundMetrics(funds);
+    for (const f of fm.funds) {
+      const isEquity = f.category ? /equity/i.test(f.category) : false;
+      if (!isEquity || f.pnl === null || f.pnl >= 0) continue;
+      const loss = -f.pnl;
+      fundTermAssumed = true;
+      fundLosers.push({
+        symbol: f.schemeName,
+        exchange: "MF",
+        quantity: f.units,
+        amount: round2(loss),
+        term: "LTCG",
+        estTaxImpact: round2(loss * TAX_RULES.ltcgRate),
+        kind: "fund",
+      });
+    }
+  }
+
   // ---- Harvesting levers --------------------------------------------------
   // 1. Tax-loss harvesting: open positions sitting in a loss. Booking the loss
   //    offsets realized gains — short-term losses can offset both STCG & LTCG
   //    (so we value them at the higher STCG rate), long-term losses only LTCG.
-  const lossCandidates: HarvestCandidate[] = taxLots
+  const stockLossCandidates: HarvestCandidate[] = taxLots
     .filter((l) => l.unrealized !== null && l.unrealized < 0)
     .map((l) => {
       const loss = -(l.unrealized as number);
@@ -405,8 +536,12 @@ export async function computeTax(
         amount: round2(loss),
         term: l.term,
         estTaxImpact: round2(loss * rate),
+        kind: "stock" as const,
       };
     });
+  const lossCandidates: HarvestCandidate[] = [...stockLossCandidates, ...fundLosers].sort(
+    (a, b) => b.amount - a.amount,
+  );
   const totalHarvestableLoss = round2(lossCandidates.reduce((s, c) => s + c.amount, 0));
   // Only meaningful up to the gains you've actually realized this FY.
   const offsetableGain = Math.max(0, stcgGain) + Math.max(0, ltcgGain);
@@ -446,6 +581,17 @@ export async function computeTax(
       estTaxImpact: round2((l.unrealized as number) * (TAX_RULES.stcgRate - TAX_RULES.ltcgRate)),
       daysToLtcg: l.daysToLtcg,
     }));
+
+  // Year-end harvest plan + deadline. The plan only makes sense for the FY you
+  // can still act in (you can't harvest a closed year), so it's null otherwise.
+  const isCurrentFy = targetFy === fyOf(asOf);
+  const fyEndDate = end; // 31 Mar of the target FY
+  const deadline = {
+    fyEnd: fyEndDate.toISOString().slice(0, 10),
+    daysLeft: Math.max(0, daysBetween(asOf, fyEndDate)),
+    isCurrentFy,
+  };
+  const plan = isCurrentFy ? buildHarvestPlan(lossCandidates, netStcg, netLtcg, stcgTax + ltcgTax) : null;
 
   const warnings: string[] = [];
   if (unmatchedSellQty > 1e-9) {
@@ -497,7 +643,9 @@ export async function computeTax(
       estLossTaxSaved,
       ltcgFreeCandidates,
       countdown,
+      plan,
     },
+    deadline,
     rules: TAX_RULES,
     warnings,
     asOf: asOf.toISOString(),

@@ -11,10 +11,13 @@ export default async function TaxPage() {
   const user = await getSessionUser();
   if (!user?.portfolioId) return null; // layout redirects
 
-  const transactions = await prisma.transaction.findMany({
-    where: { portfolioId: user.portfolioId },
-    orderBy: { tradedAt: "asc" },
-  });
+  const [transactions, funds] = await Promise.all([
+    prisma.transaction.findMany({
+      where: { portfolioId: user.portfolioId },
+      orderBy: { tradedAt: "asc" },
+    }),
+    prisma.fundHolding.findMany({ where: { portfolioId: user.portfolioId } }),
+  ]);
 
   if (transactions.length === 0) {
     return (
@@ -35,6 +38,6 @@ export default async function TaxPage() {
     );
   }
 
-  const summary = await computeTax(transactions);
-  return <TaxView initial={summary} />;
+  const summary = await computeTax(transactions, undefined, undefined, funds);
+  return <TaxView initial={summary} reminderOptIn={user.harvestReminderOptIn} />;
 }
