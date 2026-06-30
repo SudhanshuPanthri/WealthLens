@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { TrendingUp, Loader2 } from "lucide-react";
+import { TrendingUp, Loader2, Eye, EyeOff } from "lucide-react";
 
 const OAUTH_ERRORS: Record<string, string> = {
   provider_unavailable: "That sign-in method isn't configured yet.",
@@ -150,15 +150,35 @@ function GoogleIcon() {
 
 function Field({
   label,
+  type,
   ...props
 }: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) {
+  const [reveal, setReveal] = useState(false);
+  const isPassword = type === "password";
+  const inputType = isPassword ? (reveal ? "text" : "password") : type;
   return (
     <label className="block">
       <span className="mb-1.5 block text-sm font-medium text-muted">{label}</span>
-      <input
-        {...props}
-        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none placeholder:text-muted focus:border-accent"
-      />
+      <div className="relative">
+        <input
+          {...props}
+          type={inputType}
+          className={`w-full rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none placeholder:text-muted focus:border-accent ${
+            isPassword ? "pr-11" : ""
+          }`}
+        />
+        {isPassword && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => setReveal((v) => !v)}
+            aria-label={reveal ? "Hide password" : "Show password"}
+            className="absolute inset-y-0 right-0 flex items-center px-3 text-muted transition-colors hover:text-ink"
+          >
+            {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        )}
+      </div>
     </label>
   );
 }
