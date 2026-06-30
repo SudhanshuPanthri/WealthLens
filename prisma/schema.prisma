@@ -52,6 +52,23 @@ model Session {
   @@index([userId])
 }
 
+// A one-time email code for resetting a forgotten password. The 6-digit code is
+// stored bcrypt-hashed (never in clear). `token` is issued only after the code
+// is verified, so the final password-set step never re-transmits the code.
+// `attempts` caps brute-force guessing; rows expire after a short TTL.
+model PasswordReset {
+  id         String    @id @default(cuid())
+  email      String
+  codeHash   String
+  token      String?   @unique
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([email])
+}
+
 model Portfolio {
   id        String        @id @default(cuid())
   userId    String

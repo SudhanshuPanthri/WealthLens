@@ -103,6 +103,13 @@ export default function AuthForm({
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               required
               minLength={mode === "signup" ? 8 : undefined}
+              labelAccessory={
+                mode === "login" ? (
+                  <Link href="/forgot-password" className="text-xs text-accent hover:underline">
+                    Forgot password?
+                  </Link>
+                ) : undefined
+              }
             />
             {error && <p className="text-sm text-loss">{error}</p>}
             <button
@@ -151,14 +158,18 @@ function GoogleIcon() {
 function Field({
   label,
   type,
+  labelAccessory,
   ...props
-}: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) {
+}: { label: string; labelAccessory?: React.ReactNode } & React.InputHTMLAttributes<HTMLInputElement>) {
   const [reveal, setReveal] = useState(false);
   const isPassword = type === "password";
   const inputType = isPassword ? (reveal ? "text" : "password") : type;
   return (
     <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-muted">{label}</span>
+      <span className="mb-1.5 flex items-center justify-between text-sm font-medium text-muted">
+        {label}
+        {labelAccessory}
+      </span>
       <div className="relative">
         <input
           {...props}
