@@ -191,8 +191,23 @@ Ranked product differentiators. Done: **Tax intelligence** (Phase 10),
 tax-harvest plan/funds/reminder** (Phase 14).
 
 User-chosen feature queue (2026-06-30): **Tax-Loss Harvesting** ✅ (Phase 14) →
-**Dividend Income Tracker** ✅ (Phase 15) → **MF Fee/Expense Leakage** (next) →
-**Portfolio Overlap X-ray**.
+**Dividend Income Tracker** ✅ (Phase 15) → **MF Fee/Expense Leakage** ✅ (Phase 16) →
+**Portfolio Overlap X-ray** (next, last in queue).
+
+### Phase 16 — MF Fee / Expense Leakage (most recent work)
+- `lib/fees.ts` `computeFees(funds)` — totals annual TER drag across funds + flags
+  Regular-plan holdings where the Direct plan saves ~1%/yr. **No free API for exact
+  Indian TERs**, so TER is estimated by category (index/equity/hybrid/debt) × plan
+  (Direct/Regular) from a band table; plan detected from scheme name (`/direct/i`,
+  else Regular), category from mfapi `scheme_category` + name. Fee base = live value
+  **?? invested** (so a failed NAV lookup doesn't drop a fund; `liveValued` flag +
+  `*` marker in UI). Regular→Direct saving is the actionable number; 10y projection =
+  annualSaving×10 (value-constant). Stocks have no TER → funds only.
+- `/fees` page (instant-paint: cheap `fundHolding.count` + shell, client `FeesView`
+  fetches `/api/fees` with skeleton). Nav gained "Fees" (Wallet icon).
+- Verified live: HDFC Top100 Regular + UTI Nifty Regular + PPFC Direct → fee ₹13,900/yr,
+  wTER 1.4%, Direct-switch saving ₹6,670/yr (~₹66,700/10y); cost-basis fallback when NAV
+  cold. `tsc` clean; test user cleaned up.
 
 ### Phase 15 — Dividend Income Tracker (most recent work)
 - `lib/dividends.ts` `computeDividends(holdings)` — projected annual income (Yahoo
