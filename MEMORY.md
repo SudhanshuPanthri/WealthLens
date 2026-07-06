@@ -194,7 +194,42 @@ User-chosen feature queue (2026-06-30): **Tax-Loss Harvesting** ✅ (Phase 14) �
 **Dividend Income Tracker** ✅ (Phase 15) → **MF Fee/Expense Leakage** ✅ (Phase 16) →
 **Portfolio Overlap X-ray** (next, last in queue).
 
-### Phase 16 — MF Fee / Expense Leakage (most recent work)
+### Phase 17 — Portfolio Q&A chat ("Ask AI") + faster free models (most recent work)
+- **Conversational assistant** (`/ask`, `lib/chat.ts`, `/api/chat`, `ChatView`) — a chat
+  that answers free-form questions about the user's own portfolio ("where am I most
+  concentrated?", "what could I add to diversify?"). Distinct from `/insights` (one-shot,
+  structured, cached score+risks); this is multi-turn and conversational.
+  - **Engine ladder reused, minus rule-based** (can't converse): Claude → OpenRouter → Gemini,
+    via `chatEngines()`. `503` when no LLM key is set (insights still works keyless; chat needs
+    a key). Falls through to the next engine only if the current one fails *before* streaming
+    any text.
+  - **Context** — `buildChatContext()` reuses the insights `buildSnapshot()` (rounded stock
+    view) + a lean live-NAV fund summary, injected into the system prompt inside
+    `<portfolio_context>`. Empty portfolio → a note so general questions still answer.
+  - **Streaming protocol** — response body is: first line = JSON `{engine, model}`, rest = reply
+    text. Claude streams token-by-token (`messages.stream` + text deltas); OpenRouter/Gemini
+    return one chunk. `ChatView` parses the meta line then appends deltas; a "[error] …" trailer
+    signals a mid-stream failure. **Stop button** aborts the client fetch; the route's
+    `ReadableStream.cancel()` fires an `AbortController` so Claude/HTTP generation stops
+    server-side too (no wasted tokens).
+  - **Guardrails** — per-user rate limit (`CHAT_RATE_LIMIT`, default 20/min) + shared `llmQueue`;
+    system prompt keeps answers educational (no buy/sell orders, no invented numbers), plain text,
+    INR, with a not-advice reminder. Request schema caps 24 msgs; per-msg content cap is 200k chars
+    (**not** 4000 — assistant replies are echoed back as history and would 400 the 2nd turn).
+- **Faster free models** — chat's OpenRouter default is now `openai/gpt-oss-20b:free` (low-latency
+  MoE, ~3.6B active) instead of the batch insights engine's `gpt-oss-120b:free`. New
+  `OPENROUTER_CHAT_MODEL` overrides just chat; `OPENROUTER_MODEL` still overrides both. The `:free`
+  lineup rotates & per-model availability changes without notice — other strong picks noted in
+  `chat.ts`: `meta-llama/llama-3.3-70b-instruct:free`, `nvidia/nemotron-3-super-120b-a12b:free`,
+  `qwen/qwen3-next-80b-a3b-instruct:free`. Verify a `:free` ID is live before pinning it.
+- New optional env: `OPENROUTER_CHAT_MODEL`, `CHAT_CLAUDE_EFFORT` (default medium), `CHAT_RATE_LIMIT`.
+- **NOT yet verified live** — this environment has no Node/npm, so `tsc --noEmit` and the
+  end-to-end smoke test (signup → import → `/ask`) could not be run. Types were checked by
+  inspection against the installed `@anthropic-ai/sdk@0.104.1` .d.ts files (`stream(body, {signal})`,
+  `output_config.effort`, `finalMessage()`, `text_delta`). **Run `npx tsc --noEmit` + a live smoke
+  test before shipping.**
+
+### Phase 16 — MF Fee / Expense Leakage
 - `lib/fees.ts` `computeFees(funds)` — totals annual TER drag across funds + flags
   Regular-plan holdings where the Direct plan saves ~1%/yr. **No free API for exact
   Indian TERs**, so TER is estimated by category (index/equity/hybrid/debt) × plan
@@ -257,14 +292,15 @@ src/lib/         analytics.ts  funds.ts  tax.ts  pnl.ts  metrics.ts  quotes.ts
                  market.ts  parsers/ (holdings + transactions + funds; index.ts
                    exposes parseImportFile — the unified HOLDINGS|FUNDS dispatcher)
                  insights/ (rules|gemini|openrouter|claude + dispatcher)
+                 chat.ts (Ask-AI Q&A: claude|openrouter|gemini, context builder)
                  cache.ts  rate-limit.ts  log.ts  format.ts  auth.ts  oauth.ts
 src/app/api/     analytics  tax  transactions(+parse/commit)  stock/[symbol]
                  index/[slug]  watchlist  search/stocks  market  portfolio
                  import/(parse | commit | funds/commit)
-                 insights  cron/refresh  auth/(login|signup|logout|oauth)
+                 insights  chat  cron/refresh  auth/(login|signup|logout|oauth)
 src/app/(app)/   dashboard  analytics  stock/[symbol]  index/[slug]  watchlist
-                 transactions  tax  import  insights
-src/components/  AnalyticsView  TaxView  FundsTable  IndexDetailView
+                 transactions  tax  import  insights  ask
+src/components/  AnalyticsView  TaxView  FundsTable  IndexDetailView  ChatView
                  StockDetailView  TransactionsView  DashboardView  ImportFlow
                  IndicesStrip  Nav  ThemeToggle ...
 src/instrumentation.ts + instrumentation-node.ts   (boot: DNS + refresh timer)

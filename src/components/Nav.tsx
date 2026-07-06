@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers, Coins, Wallet } from "lucide-react";
+import { TrendingUp, LayoutDashboard, Upload, Sparkles, Star, Receipt, Landmark, Layers, Coins, Wallet, MessageCircle } from "lucide-react";
 import UserMenu from "@/components/UserMenu";
 
 const LINKS = [
@@ -15,6 +15,7 @@ const LINKS = [
   { href: "/tax", label: "Tax", icon: Landmark },
   { href: "/import", label: "Import", icon: Upload },
   { href: "/insights", label: "AI Insights", icon: Sparkles },
+  { href: "/ask", label: "Ask AI", icon: MessageCircle },
 ];
 
 export default function Nav({

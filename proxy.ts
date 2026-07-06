@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const SESSION_COOKIE = "wl_session";
-const PROTECTED = ["/dashboard", "/analytics", "/import", "/insights", "/watchlist", "/stock", "/index", "/transactions", "/tax"];
+const PROTECTED = ["/dashboard", "/analytics", "/import", "/insights", "/ask", "/watchlist", "/stock", "/index", "/transactions", "/tax"];
 const AUTH_PAGES = ["/login", "/signup"];
 
 /**
@@ -29,6 +29,7 @@ export const config = {
     "/analytics/:path*",
     "/import/:path*",
     "/insights/:path*",
+    "/ask/:path*",
     "/watchlist/:path*",
     "/stock/:path*",
     "/index/:path*",

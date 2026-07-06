@@ -102,6 +102,7 @@ Broker export (CSV/XLSX)
 | `rate-limit.ts` | `rateLimit()` (fixed-window, per-user) + `Semaphore` (`llmQueue` bounds concurrent LLM calls). |
 | `log.ts` | `logError()` + `setErrorReporter()` — one seam to wire a monitor (Sentry/Axiom/Datadog). |
 | `insights/` | The AI engine, split into a shared `schema.ts` (zod schema, snapshot builder, system prompt), engines (`rules.ts`, `openrouter.ts`, `gemini.ts`, `claude.ts`), and `index.ts` (the dispatcher: picks the best available engine, caches, and degrades gracefully). |
+| `chat.ts` | **Portfolio Q&A chat.** Reuses the insights engine ladder *minus* the rule-based engine (a deterministic scorer can't converse): Claude (streaming) → OpenRouter (free models) → Gemini. `buildChatContext()` assembles the model-facing view — the same rounded stock snapshot the insights engines use, plus a lean live-NAV fund summary. `claudeChatStream()` yields text deltas; `openRouterChat()`/`geminiChat()` return one chunk. A conversational system prompt grounds answers in the snapshot, keeps them educational (no buy/sell orders), and forbids invented numbers. All three engines accept an `AbortSignal` so a client disconnect stops server-side generation. |
 | `format.ts` | INR / percent / P&L / crore formatting shared across the UI. |
 | `instrumentation.ts` (`src/`) | Runs at server boot. `register()` is runtime-agnostic; Node-only work lives in `instrumentation-node.ts` (imported only when `NEXT_RUNTIME==="nodejs"`) — forces IPv4-first DNS and starts the background quote refresher (single-instance; disable with `BACKGROUND_REFRESH=off`). This split keeps the Edge bundle from compiling the forbidden `node:dns` import. |
 
@@ -149,6 +150,7 @@ else ───────────────────► rule-based  (n
 | `/api/import/commit` | POST | Resolve symbols, merge dupes, upsert Holdings. |
 | `/api/import/funds/commit` | POST | Resolve mfapi.in scheme codes, merge dupes, upsert FundHoldings (kind=FUNDS batch). |
 | `/api/insights` | GET / POST | Fetch latest / generate insight. Per-user rate-limited; LLM calls run through a concurrency queue. `maxDuration=300`. |
+| `/api/chat` | POST | Portfolio Q&A. Streams a reply: first line is a JSON meta object (`{engine, model}`), the rest is text (Claude token-by-token; OpenRouter/Gemini one chunk). Per-user rate-limited, shares the `llmQueue`, `maxDuration=300`. `503` when no LLM key is set. |
 | `/api/market` | GET | Public homepage snapshot (indices, movers, funds); server-cached. |
 | `/api/portfolio` | GET | Live stock `metrics` + mutual-fund `funds` metrics for the dashboard's 30s poll. |
 | `/api/stock/[symbol]` | GET | Live detail + price history for one stock (range param). |
@@ -163,7 +165,7 @@ else ───────────────────► rule-based  (n
 
 `proxy.ts` (Next 16's renamed middleware) is a fast cookie-presence gate that
 redirects unauthenticated users away from the protected pages
-(`/dashboard|/analytics|/import|/insights|/watchlist|/stock|/index|/transactions|/tax`) and
+(`/dashboard|/analytics|/import|/insights|/ask|/watchlist|/stock|/index|/transactions|/tax`) and
 authenticated users away from `/login|/signup`. Real session validation (DB
 lookup) happens in `getSessionUser()` in the app layout and every API route.
 
@@ -200,6 +202,11 @@ lookup) happens in `getSessionUser()` in the app layout and every API route.
   prompts for a PDF password when the CAS is encrypted, and commits to the matching route.
 - `(app)/insights` — `InsightsView` (score dial, summary, red flags, strengths,
   diversification, severity-ranked risks, actionable suggestions).
+- `(app)/ask` — `ChatView`: a conversational assistant that answers questions about
+  the user's live portfolio (holdings + funds). Streams the reply, shows an engine
+  badge, suggestion chips on an empty thread, and a Stop button that aborts
+  generation. Instant-paint server page (cheap holding/fund counts + LLM-availability
+  check); the client component holds the conversation.
 - Theming: root `layout.tsx` sets the `.dark` class before paint (defaults dark);
   `ThemeToggle` flips light/dark and persists to `localStorage`. Colors are CSS
   variables (`:root` light, `.dark` dark) mapped to Tailwind tokens in `globals.css`.
